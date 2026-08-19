@@ -1,9 +1,9 @@
 {
   "id": "kanban",
   "name": "Kanban Board",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "minAppVersion": "1.12.0",
-  "description": "A modern, feature-rich Kanban board.",
+  "description": "A Kanban board driven by #ToDo/#InProgress/#Done tags on your real tasks - matches task-front-end and task_viewer.py.",
   "author": "Komail Kanjee",
   "authorUrl": "https://github.com/komailo",
   "isDesktopOnly": false,
