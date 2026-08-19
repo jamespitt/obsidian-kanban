@@ -13,13 +13,13 @@ export default class KanbanPlugin extends Plugin {
             (leaf) => new KanbanView(leaf, this)
         );
 
-        this.addRibbonIcon('layout-grid', 'Open Kanban board', () => {
+        this.addRibbonIcon('layout-grid', 'Open board', () => {
             void this.activateView();
         });
 
         this.addCommand({
             id: 'open-view',
-            name: 'Open Kanban board',
+            name: 'Open board',
             callback: () => {
                 void this.activateView();
             }

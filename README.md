@@ -1,73 +1,22 @@
-# Obsidian Kanban
+# Kanban Board
 
-A modern, feature-rich Kanban board for Obsidian.
+A Kanban board for Obsidian that reads and writes your **real tasks** - no separate board file, no bespoke format. It's a native-plugin twin of the Kanban view in `task-front-end` (the companion web app) and the `Kanban` tab in `task_viewer.py` (the TUI): all three read and write the exact same markdown convention, so a task moved on one shows up moved on the others.
 
-Create and manage your projects with a simple, intuitive drag-and-drop interface directly within your Obsidian vault.
+## How it works
 
-## Features
+- **One global board**, not a file type you create. Open it via the ribbon icon or the **Open board** command.
+- **Columns are fixed**: To Do / In Progress / Done. A task is on the board if it carries one of the `#ToDo`, `#InProgress`, `#Done` tags (case-insensitive) - anywhere in the configured task folder. Untagged tasks simply don't appear.
+- **Cards are your actual task lines** - `- [ ] Buy milk #ToDo [due::2026-08-20]` - parsed the same way `notesmd-cli`'s server and `task_viewer.py` parse them: `[due::...]`, `[scheduled::...]`, `[priority::...]`, `[repeat::...]`, and any other `#tag`.
+- **Moving a card** (drag-and-drop, or the `← / →` buttons on each card) swaps the status tag in place and keeps completion in sync: moving onto **Done** checks the task off; moving off it un-checks it. Every other tag and field on the line is left untouched.
+- **Clicking a card** opens its source file at that line, so you can edit anything else about it (title, due date, other tags, add a subtask, ...) the normal way.
+- The board refreshes automatically when files change - including edits made from `task-front-end`, `task_viewer.py`, or anywhere else, since they're all editing the same lines.
 
-- **Markdown-Backed**: All your board data is stored in standard Markdown files.
-- **Interactive UI**: Responsive drag-and-drop interface for managing lanes and cards.
-- **Sub-swimlanes**: Organize complex workflows with nested lanes. Perfect for grouping "Active" and "Slow" tasks under "In Progress."
-- **Search and Filter**: Easily find cards with the built-in search bar.
-- **Date Management**: Add and manage dates on your cards with a native calendar picker.
-- **Note Integration**: Quickly create new notes from Kanban cards.
-- **Customizable**: Define your own lanes, lane widths, and date formats.
+## Settings
 
-## Installation
+- **Task folder**: the vault-relative folder to scan for tasks (recursively). Leave blank to scan the whole vault.
 
-1. Search for "Obsidian Kanban" in the Community Plugins tab in Obsidian settings.
-2. Install and enable the plugin.
+## What this plugin intentionally doesn't do
 
-## Usage
+This used to be a general-purpose, multi-board Kanban plugin with custom lanes, sub-lanes, per-board priority colors, and its own `.kanban` file format. That's gone in favor of matching the shared task system exactly - see `AGENTS.md` for the project's development conventions. If you have old `.kanban` files from a previous version, they're untouched (still plain markdown) but this plugin no longer opens them as boards.
 
-### Creating Sub-swimlanes
-
-You can create sub-swimlanes in two ways:
-
-1. **In Settings**: Go to the board settings (gear icon) and use a `-` prefix for any lane you want to nest under the previous one. For example:
-
-    ```text
-    Backlog
-    Todo
-    In Progress
-    - Active
-    - Slow
-    Done
-    ```
-
-2. **In Markdown**: Use different heading levels. H2 headings create top-level lanes, and H3+ headings create sub-lanes nested under the preceding H2.
-
-### Managing Priorities
-
-You can configure global default priorities in the Obsidian settings, or customize them per-board via the Board Settings menu (gear icon).
-
-1. **Format:** Define priorities as a list, one per line, using the format `Name, Color`. (e.g., `High, red`, `P1, #ff0000`, `Critical, rgb(255,0,0)`).
-2. **Assigning:** Right-click any card to open the context menu and select a priority to assign it. It will render as a colorful badge on the card.
-3. **Auto-Grouping:** Enable the **Auto group by priority** setting to strictly enforce priority sorting within lanes. Drag-and-drop will intelligently reject moves that violate the sorting order, ensuring your highest-priority tasks are always at the top.
-4. **Deleting Priorities:** If you remove a priority from your settings, data is preserved! The card will retain a standard markdown tag (e.g., `#P1`), and will simply be grouped as "unassigned" if auto-grouping is enabled. Add the priority back to your settings, and the board will instantly re-render the badges and re-sort them automatically.
-
-## Configuration & Feature Flags
-
-The plugin includes several configuration options and feature flags to customize your experience. These can be found in the Obsidian settings under **Community plugins → Obsidian Kanban**.
-
-- **Add card button in header**: (Enabled by default) Adds a button to the header for creating new cards. This saves vertical space, especially in long lanes.
-- **Auto group by priority**: Automatically sorts cards by their assigned priority within each lane.
-- **Hide tags in card titles**: Visually removes hashtags from card titles while keeping them in the underlying markdown.
-- **Show linked page metadata**: Displays frontmatter metadata from any notes linked in a card.
-
-## Screen Shots
-
-### Main Board
-
-![screenshot-board](docs/assets/screenshot-board.png)
-
-### Sub-swimlanes
-
-![screenshot-board-with-sub-swim-lanes](docs/assets/screenshot-board-with-sub-swim-lanes.png)
-
-### Priorities
-
-<!-- TODO: Add a screenshot of the new priority badges and right-click menu here -->
-
-![screenshot-priorities](docs/assets/screenshot-priorities-with-grouping.png)
+If you want richer card editing (full edit modal, general tag add/remove, adding subtasks) from a board view specifically rather than by opening the source file, that's exactly what `task-front-end`'s Kanban tab already does - this plugin deliberately stays focused on the board itself.

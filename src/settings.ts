@@ -31,7 +31,7 @@ export class KanbanSettingTab extends PluginSettingTab {
 			.setName('Task folder')
 			.setDesc('Vault-relative folder to scan for tasks (recursively). Leave blank to scan the whole vault.')
 			.addText(text => text
-				.setPlaceholder('Google Tasks')
+				.setPlaceholder('Tasks')
 				.setValue(this.plugin.settings.taskFolder)
 				.onChange(async (value) => {
 					this.plugin.settings.taskFolder = value.trim();
