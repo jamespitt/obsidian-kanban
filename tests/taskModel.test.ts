@@ -6,7 +6,9 @@ import {
     KANBAN_STATUSES,
     matchesFilter,
     parseBoardFilter,
-    serializeBoardFilter,
+    parseBoardColumns,
+    serializeBoardConfig,
+    columnLabel,
     noteTitleFromTask,
     addNoteLinkToContent,
     extractWikilink
@@ -52,6 +54,15 @@ function run() {
     const board = filterKanban([t1, t2, untagged]);
     assertEqual(board.map((t) => t.title), ['Buy milk', 'Done thing'], 'filterKanban keeps only tagged tasks, completed included');
 
+    // A board with its own custom columns only recognizes those tags, not the default three.
+    const customTask = parseTaskLine('- [ ] Review PR #Backlog', 'Work.md', 1)!;
+    assertEqual(kanbanStatus(customTask, ['Backlog', 'InReview', 'Shipped']), 'Backlog',
+        'kanbanStatus respects a custom column list');
+    assertEqual(kanbanStatus(t1, ['Backlog', 'InReview', 'Shipped']), null,
+        'a task tagged for the default columns is off a board using custom ones');
+    assertEqual(filterKanban([t1, customTask], ['Backlog']).map((t) => t.title), ['Review PR'],
+        'filterKanban respects a custom column list too');
+
     // --- setStatusTagInContent ---
 
     const file = '# Work\n\n- [ ] Buy milk #groceries #ToDo [due::2026-08-20]\n- [ ] Other task\n';
@@ -83,6 +94,19 @@ function run() {
     const uncheckedFromDone = setStatusTagInContent('- [x] Done item #Done\n', 1, 'ToDo');
     assertEqual(uncheckedFromDone.trimEnd(), '- [ ] Done item #ToDo', 'un-checks the box when moving off Done');
 
+    // Custom columns: only the board's own tags get stripped, and only a
+    // column literally named "Done" (case-insensitive) completes the task.
+    const customFile = '- [ ] Ship it #Backlog\n';
+    const toShipped = setStatusTagInContent(customFile, 1, 'Shipped', ['Backlog', 'InReview', 'Shipped']);
+    assertEqual(toShipped.trimEnd(), '- [ ] Ship it #Shipped', 'moves within a custom column set, no #Done involved');
+
+    const toDoneCustom = setStatusTagInContent(customFile, 1, 'done', ['Backlog', 'InReview', 'done']);
+    assertEqual(toDoneCustom.trimEnd(), '- [x] Ship it #done', 'a custom column literally named "done" (any case) still completes the task');
+
+    const leavesOtherTags = setStatusTagInContent('- [ ] Ship it #Backlog #urgent\n', 1, 'InReview', ['Backlog', 'InReview']);
+    assertEqual(leavesOtherTags.trimEnd(), '- [ ] Ship it  #urgent #InReview',
+        "only the board's own column tags are stripped - a non-column tag like #urgent is left alone");
+
     assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
 
     // --- matchesFilter ---
@@ -95,7 +119,7 @@ function run() {
     assertEqual(matchesFilter(projectTask, ['ProjectY']), false, 'does not match an unrelated tag');
     assertEqual(matchesFilter(projectTask, ['ProjectY', 'ProjectX']), true, 'matches if any filter tag is carried');
 
-    // --- parseBoardFilter / serializeBoardFilter ---
+    // --- parseBoardFilter / parseBoardColumns / serializeBoardConfig ---
 
     assertEqual(parseBoardFilter(''), [], 'empty board file has no filter');
     assertEqual(parseBoardFilter('filter: ProjectX, Home Fixes'), ['ProjectX', 'Home Fixes'],
@@ -105,10 +129,33 @@ function run() {
         'finds the filter line regardless of other content');
     assertEqual(parseBoardFilter('filter:'), [], 'a blank filter line means no filter');
 
-    const roundTrip = parseBoardFilter(serializeBoardFilter(['ProjectX', 'Home Fixes']));
-    assertEqual(roundTrip, ['ProjectX', 'Home Fixes'], 'serializeBoardFilter round-trips through parseBoardFilter');
-    const roundTripEmpty = parseBoardFilter(serializeBoardFilter([]));
-    assertEqual(roundTripEmpty, [], 'serializeBoardFilter round-trips an empty filter');
+    assertEqual(parseBoardColumns(''), ['ToDo', 'InProgress', 'Done'], 'no columns line means the default columns');
+    assertEqual(parseBoardColumns('columns:'), ['ToDo', 'InProgress', 'Done'], 'a blank columns line also means the default');
+    assertEqual(parseBoardColumns('columns: Backlog, InReview, Shipped'), ['Backlog', 'InReview', 'Shipped'],
+        'parses a custom comma-separated column line, order preserved');
+    assertEqual(parseBoardColumns('filter: ProjectX\ncolumns: Backlog, Done'), ['Backlog', 'Done'],
+        'columns and filter lines are parsed independently');
+
+    const roundTrip = parseBoardFilter(serializeBoardConfig(['ProjectX', 'Home Fixes'], []));
+    assertEqual(roundTrip, ['ProjectX', 'Home Fixes'], 'serializeBoardConfig round-trips the filter through parseBoardFilter');
+    const roundTripEmpty = parseBoardFilter(serializeBoardConfig([], []));
+    assertEqual(roundTripEmpty, [], 'serializeBoardConfig round-trips an empty filter');
+
+    const columnsRoundTrip = parseBoardColumns(serializeBoardConfig([], ['Backlog', 'InReview', 'Shipped']));
+    assertEqual(columnsRoundTrip, ['Backlog', 'InReview', 'Shipped'],
+        'serializeBoardConfig round-trips custom columns through parseBoardColumns');
+    const columnsRoundTripDefault = parseBoardColumns(serializeBoardConfig([], []));
+    assertEqual(columnsRoundTripDefault, ['ToDo', 'InProgress', 'Done'],
+        'serializeBoardConfig with no columns round-trips to the default columns');
+
+    // --- columnLabel ---
+
+    assertEqual(columnLabel('ToDo'), 'To Do', 'reproduces the existing "To Do" label');
+    assertEqual(columnLabel('InProgress'), 'In Progress', 'reproduces the existing "In Progress" label');
+    assertEqual(columnLabel('Done'), 'Done', 'reproduces the existing "Done" label');
+    assertEqual(columnLabel('Backlog'), 'Backlog', 'a plain custom tag is used as-is');
+    assertEqual(columnLabel('code_review'), 'Code review', 'underscores become spaces');
+    assertEqual(columnLabel('inReview'), 'In Review', 'splits a camelCase boundary even without a leading capital');
 
     // --- noteTitleFromTask ---
 

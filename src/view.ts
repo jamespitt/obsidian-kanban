@@ -1,6 +1,6 @@
 import { TextFileView, WorkspaceLeaf, TFile, Notice, Menu, debounce, Debouncer } from 'obsidian';
 import KanbanPlugin from './main';
-import { EditFilterModal } from './EditFilterModal';
+import { EditBoardModal } from './EditBoardModal';
 import {
     Task,
     KanbanStatus,
@@ -11,7 +11,9 @@ import {
     matchesFilter,
     setStatusTagInContent,
     parseBoardFilter,
-    serializeBoardFilter,
+    parseBoardColumns,
+    serializeBoardConfig,
+    columnLabel,
     noteTitleFromTask,
     addNoteLinkToContent,
     extractWikilink
@@ -19,25 +21,28 @@ import {
 
 export const KANBAN_VIEW_TYPE = 'kanban-board-view';
 
-const COLUMN_LABELS: Record<KanbanStatus, string> = {
-    ToDo: 'To Do',
-    InProgress: 'In Progress',
-    Done: 'Done'
-};
+function sameColumns(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((c, i) => c.toLowerCase() === b[i]?.toLowerCase());
+}
 
 /**
- * A board over the vault's real tasks, driven by the #ToDo/#InProgress/#Done
- * tags - the same convention task_viewer.py (TUI) and task-front-end (web)
- * use. A board is a `.kanban` file, like the original version of this
- * plugin, but its content is only ever a tag filter (see taskModel's
- * parseBoardFilter/serializeBoardFilter) - never task data. Tasks always
- * live in, and are edited in place in, their real source files; a board is
- * just a saved, reopenable view over a subset of them.
+ * A board over the vault's real tasks, driven by tag columns - by default
+ * #ToDo/#InProgress/#Done, the same convention task_viewer.py (TUI) and
+ * task-front-end (web) use, though a board can define its own column set
+ * instead (see taskModel's parseBoardColumns) - that necessarily only
+ * shows up here, since the other two tools only know the default three. A
+ * board is a `.kanban` file, like the original version of this plugin, but
+ * its content is only ever a tag filter and column list (see taskModel's
+ * parseBoardFilter/parseBoardColumns/serializeBoardConfig) - never task
+ * data. Tasks always live in, and are edited in place in, their real
+ * source files; a board is just a saved, reopenable view over a subset of
+ * them.
  */
 export class KanbanView extends TextFileView {
     plugin: KanbanPlugin;
     private tasks: Task[] = [];
     private filterTags: string[] = [];
+    private columns: string[] = [...KANBAN_STATUSES];
     private draggedTask: Task | null = null;
     private scheduleRefresh: Debouncer<[], void>;
 
@@ -57,17 +62,20 @@ export class KanbanView extends TextFileView {
     }
 
     getViewData(): string {
-        return serializeBoardFilter(this.filterTags);
+        const usingDefaultColumns = sameColumns(this.columns, KANBAN_STATUSES);
+        return serializeBoardConfig(this.filterTags, usingDefaultColumns ? [] : this.columns);
     }
 
     setViewData(data: string, _clear: boolean): void {
         this.filterTags = parseBoardFilter(data);
+        this.columns = parseBoardColumns(data);
         void this.refreshTasks();
     }
 
     clear(): void {
         this.tasks = [];
         this.filterTags = [];
+        this.columns = [...KANBAN_STATUSES];
     }
 
     async onOpen(): Promise<void> {
@@ -80,7 +88,7 @@ export class KanbanView extends TextFileView {
         this.registerEvent(this.app.vault.on('rename', () => this.scheduleRefresh()));
 
         this.addAction('refresh-cw', 'Refresh', () => { void this.refreshTasks(); });
-        this.addAction('filter', 'Edit filter', () => this.editFilter());
+        this.addAction('filter', 'Edit board (filter/columns)', () => this.editBoard());
     }
 
     async onClose(): Promise<void> {
@@ -118,12 +126,20 @@ export class KanbanView extends TextFileView {
         return tasks;
     }
 
-    private editFilter(): void {
-        new EditFilterModal(this.app, this.filterTags.join(', '), (input) => {
-            this.filterTags = input.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
-            this.requestSave();
-            this.render();
-        }).open();
+    private editBoard(): void {
+        const usingDefaultColumns = sameColumns(this.columns, KANBAN_STATUSES);
+        new EditBoardModal(
+            this.app,
+            this.filterTags.join(', '),
+            usingDefaultColumns ? '' : this.columns.join(', '),
+            (filterInput, columnsInput) => {
+                this.filterTags = filterInput.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
+                const customColumns = columnsInput.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
+                this.columns = customColumns.length > 0 ? customColumns : [...KANBAN_STATUSES];
+                this.requestSave();
+                this.render();
+            }
+        ).open();
     }
 
     private render(): void {
@@ -131,11 +147,12 @@ export class KanbanView extends TextFileView {
         container.empty();
         container.addClass('kanban-board-container');
 
-        const board = filterKanban(this.tasks).filter((t) => matchesFilter(t, this.filterTags));
-        const columns: Record<KanbanStatus, Task[]> = { ToDo: [], InProgress: [], Done: [] };
+        const board = filterKanban(this.tasks, this.columns).filter((t) => matchesFilter(t, this.filterTags));
+        const columns: Record<string, Task[]> = {};
+        for (const c of this.columns) columns[c] = [];
         for (const task of board) {
-            const status = kanbanStatus(task);
-            if (status) columns[status].push(task);
+            const status = kanbanStatus(task, this.columns);
+            if (status) columns[status]?.push(task);
         }
 
         if (this.filterTags.length > 0) {
@@ -145,12 +162,12 @@ export class KanbanView extends TextFileView {
 
         const boardEl = container.createDiv({ cls: 'kanban-columns' });
 
-        for (const status of KANBAN_STATUSES) {
+        for (const status of this.columns) {
             const colEl = boardEl.createDiv({ cls: 'kanban-column' });
 
             const headerEl = colEl.createDiv({ cls: 'kanban-column-header' });
-            headerEl.createSpan({ cls: 'kanban-column-title', text: COLUMN_LABELS[status] });
-            headerEl.createSpan({ cls: 'kanban-column-count', text: String(columns[status].length) });
+            headerEl.createSpan({ cls: 'kanban-column-title', text: columnLabel(status) });
+            headerEl.createSpan({ cls: 'kanban-column-count', text: String(columns[status]?.length ?? 0) });
 
             const bodyEl = colEl.createDiv({ cls: 'kanban-column-body' });
             bodyEl.addEventListener('dragover', (e) => {
@@ -169,11 +186,11 @@ export class KanbanView extends TextFileView {
                 }
             });
 
-            if (columns[status].length === 0) {
+            if ((columns[status]?.length ?? 0) === 0) {
                 bodyEl.createDiv({ cls: 'kanban-empty', text: 'No tasks' });
             }
 
-            for (const task of columns[status]) {
+            for (const task of columns[status] ?? []) {
                 this.renderCard(bodyEl, task, status);
             }
         }
@@ -242,12 +259,12 @@ export class KanbanView extends TextFileView {
         }
 
         const moveEl = cardEl.createDiv({ cls: 'kanban-card-move' });
-        const idx = KANBAN_STATUSES.indexOf(status);
-        const prev = KANBAN_STATUSES[idx - 1];
-        const next = KANBAN_STATUSES[idx + 1];
+        const idx = this.columns.indexOf(status);
+        const prev = this.columns[idx - 1];
+        const next = this.columns[idx + 1];
 
         if (prev) {
-            const prevBtn = moveEl.createEl('button', { cls: 'kanban-card-move-btn', text: `← ${COLUMN_LABELS[prev]}` });
+            const prevBtn = moveEl.createEl('button', { cls: 'kanban-card-move-btn', text: `← ${columnLabel(prev)}` });
             prevBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 void this.moveTask(task, prev);
@@ -257,7 +274,7 @@ export class KanbanView extends TextFileView {
         }
 
         if (next) {
-            const nextBtn = moveEl.createEl('button', { cls: 'kanban-card-move-btn', text: `${COLUMN_LABELS[next]} →` });
+            const nextBtn = moveEl.createEl('button', { cls: 'kanban-card-move-btn', text: `${columnLabel(next)} →` });
             nextBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 void this.moveTask(task, next);
@@ -284,7 +301,7 @@ export class KanbanView extends TextFileView {
             return;
         }
         try {
-            await this.app.vault.process(file, (content) => setStatusTagInContent(content, task.lineNum, status));
+            await this.app.vault.process(file, (content) => setStatusTagInContent(content, task.lineNum, status, this.columns));
         } catch (e) {
             new Notice(`Failed to update task: ${e instanceof Error ? e.message : String(e)}`);
         }

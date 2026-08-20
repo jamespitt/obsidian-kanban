@@ -2,7 +2,7 @@ import { Plugin, normalizePath } from 'obsidian';
 import { KanbanView, KANBAN_VIEW_TYPE } from './view';
 import { DEFAULT_SETTINGS, KanbanSettings, KanbanSettingTab } from './settings';
 import { CreateBoardModal } from './CreateBoardModal';
-import { serializeBoardFilter } from './taskModel';
+import { serializeBoardConfig } from './taskModel';
 
 export default class KanbanPlugin extends Plugin {
     settings: KanbanSettings;
@@ -17,8 +17,9 @@ export default class KanbanPlugin extends Plugin {
 
         // A board is a `.kanban` file - opening one always shows the board
         // view instead of raw markdown, same as the original version of
-        // this plugin. Its content is only ever a tag filter, though; see
-        // taskModel's parseBoardFilter/serializeBoardFilter.
+        // this plugin. Its content is only ever a tag filter and column
+        // list, though; see taskModel's parseBoardFilter/parseBoardColumns/
+        // serializeBoardConfig.
         this.registerExtensions(['kanban'], KANBAN_VIEW_TYPE);
 
         this.addRibbonIcon('layout-grid', 'New board', () => {
@@ -42,12 +43,11 @@ export default class KanbanPlugin extends Plugin {
     createNewBoard() {
         const { vault, workspace } = this.app;
 
-        new CreateBoardModal(this.app, async (boardName: string, filterTagsRaw: string) => {
+        new CreateBoardModal(this.app, async (boardName: string, filterTagsRaw: string, columnTagsRaw: string) => {
             if (!boardName.trim()) boardName = 'Untitled board';
-            const filterTags = filterTagsRaw
-                .split(',')
-                .map((t) => t.trim().replace(/^#/, ''))
-                .filter((t) => t.length > 0);
+            const toTags = (raw: string) => raw.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
+            const filterTags = toTags(filterTagsRaw);
+            const columnTags = toTags(columnTagsRaw);
 
             let fileName = normalizePath(`${boardName}.kanban`);
             let counter = 1;
@@ -56,7 +56,7 @@ export default class KanbanPlugin extends Plugin {
                 counter++;
             }
 
-            const file = await vault.create(fileName, serializeBoardFilter(filterTags));
+            const file = await vault.create(fileName, serializeBoardConfig(filterTags, columnTags));
             const leaf = workspace.getLeaf(true);
             await leaf.openFile(file);
         }).open();

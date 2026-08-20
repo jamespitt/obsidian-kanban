@@ -20,10 +20,16 @@ export interface Task {
     listName: string; // file stem, e.g. "Work.md" -> "Work"
 }
 
-// The three mutually-exclusive tags that place a task on the Kanban board -
-// matches KanbanTags/KANBAN_STATUSES in pkg/tasks and api.ts exactly.
+// The three mutually-exclusive tags used when a board doesn't specify its
+// own custom columns (see parseBoardColumns below) - matches KanbanTags/
+// KANBAN_STATUSES in pkg/tasks and api.ts exactly, which is what keeps a
+// default board's columns showing the same set of tasks as task-front-end's
+// Kanban tab and task_viewer.py's Kanban view. A board with custom columns
+// necessarily diverges from those two, since they only know this fixed set.
 export const KANBAN_STATUSES = ['ToDo', 'InProgress', 'Done'] as const;
-export type KanbanStatus = (typeof KANBAN_STATUSES)[number];
+// Any tag name can be a column once boards can define their own, so this is
+// just a readability alias now, not a closed union.
+export type KanbanStatus = string;
 
 const TASK_LINE_RE = /^(\s*)-\s*\[([xX ])\]\s+(.*)$/;
 const DATAVIEW_RE = /\[([^\]]+?)::([^\]]*)\]/g;
@@ -70,18 +76,34 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
     };
 }
 
-/** A task's current Kanban column, or null if it carries none of the KANBAN_STATUSES tags. */
-export function kanbanStatus(task: Task): KanbanStatus | null {
+/**
+ * A task's current column, or null if it carries none of `columns`' tags.
+ * Defaults to KANBAN_STATUSES, the fixed To Do/In Progress/Done set, for
+ * boards that don't define their own columns.
+ */
+export function kanbanStatus(task: Task, columns: readonly string[] = KANBAN_STATUSES): KanbanStatus | null {
     const tagsLower = new Set(task.tags.map((t) => t.toLowerCase()));
-    for (const status of KANBAN_STATUSES) {
-        if (tagsLower.has(status.toLowerCase())) return status;
+    for (const column of columns) {
+        if (tagsLower.has(column.toLowerCase())) return column;
     }
     return null;
 }
 
-/** Tasks carrying one of the KANBAN_STATUSES tags, regardless of completion status. */
-export function filterKanban(tasks: Task[]): Task[] {
-    return tasks.filter((t) => kanbanStatus(t) !== null);
+/** Tasks carrying one of `columns`' tags, regardless of completion status. */
+export function filterKanban(tasks: Task[], columns: readonly string[] = KANBAN_STATUSES): Task[] {
+    return tasks.filter((t) => kanbanStatus(t, columns) !== null);
+}
+
+/**
+ * A human-readable label for a column tag, splitting camelCase/underscore
+ * boundaries and capitalizing the first letter - "ToDo" -> "To Do",
+ * "InProgress" -> "In Progress", "code_review" -> "Code review". Applies
+ * equally to the default columns (reproducing their existing labels) and
+ * to any custom column a board defines, so there's one rule for both.
+ */
+export function columnLabel(tag: string): string {
+    const spaced = tag.replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 /**
@@ -97,17 +119,11 @@ export function matchesFilter(task: Task, filterTags: string[]): boolean {
 }
 
 const FILTER_LINE_RE = /^\s*filter\s*:\s*(.*)$/i;
+const COLUMNS_LINE_RE = /^\s*columns\s*:\s*(.*)$/i;
 
-/**
- * A board file's content is just its tag filter, not task data - tasks
- * always live in the real vault files. Parses that filter back out of the
- * saved content: the first "filter: a, b, c" line found, comma-separated,
- * '#' optional per-tag. No such line (a fresh or blank file) means no
- * filter - show every #ToDo/#InProgress/#Done task in scope.
- */
-export function parseBoardFilter(content: string): string[] {
+function parseTagListLine(content: string, re: RegExp): string[] {
     for (const line of content.split('\n')) {
-        const m = FILTER_LINE_RE.exec(line);
+        const m = re.exec(line);
         if (m) {
             return (m[1] ?? '')
                 .split(',')
@@ -118,24 +134,63 @@ export function parseBoardFilter(content: string): string[] {
     return [];
 }
 
-/** Inverse of parseBoardFilter - the content written back to a board file. */
-export function serializeBoardFilter(filterTags: string[]): string {
-    const desc = filterTags.length > 0
-        ? `Showing #ToDo/#InProgress/#Done tasks tagged ${filterTags.map((t) => `#${t}`).join(', ')}.`
-        : 'Showing every #ToDo/#InProgress/#Done task in scope.';
-    return `%% Kanban board - ${desc} Edit the filter below (comma-separated tags, blank = show all) and re-open the board to apply it. %%\nfilter: ${filterTags.join(', ')}\n`;
+/**
+ * A board file's content is just its tag filter and column list, not task
+ * data - tasks always live in the real vault files. Parses that filter back
+ * out of the saved content: the first "filter: a, b, c" line found,
+ * comma-separated, '#' optional per-tag. No such line, or a blank one (a
+ * fresh board), means no filter - show every task in scope.
+ */
+export function parseBoardFilter(content: string): string[] {
+    return parseTagListLine(content, FILTER_LINE_RE);
+}
+
+/**
+ * Parses a board's own column list from its "columns: a, b, c" line, same
+ * format as parseBoardFilter. No such line, or a blank one, means the board
+ * uses the default To Do/In Progress/Done columns (KANBAN_STATUSES) - so a
+ * plain board created before per-board columns existed keeps working
+ * exactly as before, and stays in sync with task-front-end/task_viewer.py.
+ */
+export function parseBoardColumns(content: string): string[] {
+    const columns = parseTagListLine(content, COLUMNS_LINE_RE);
+    return columns.length > 0 ? columns : [...KANBAN_STATUSES];
+}
+
+/** Inverse of parseBoardFilter/parseBoardColumns - the content written back to a board file. */
+export function serializeBoardConfig(filterTags: string[], columns: string[]): string {
+    const usingDefaultColumns = columns.length === 0;
+    const filterDesc = filterTags.length > 0
+        ? `tasks tagged ${filterTags.map((t) => `#${t}`).join(', ')}`
+        : 'every task in scope';
+    const columnsDesc = usingDefaultColumns
+        ? `the default columns (${KANBAN_STATUSES.map((c) => `#${c}`).join(' / ')})`
+        : `columns ${columns.map((c) => `#${c}`).join(' / ')}`;
+    const desc = `Showing ${filterDesc}, with ${columnsDesc}.`;
+    return `%% Kanban board - ${desc} Edit the lines below (comma-separated tags; blank filter = show everything, blank columns = default To Do/In Progress/Done) and re-open the board to apply changes. %%\nfilter: ${filterTags.join(', ')}\ncolumns: ${columns.join(', ')}\n`;
 }
 
 /**
  * Given the raw text of a file and the 1-based line number of a task within
- * it, returns the file with that task's Kanban status tag replaced by
- * `status` (pass null to remove it without adding a new one), and its
- * checkbox synced to match - `Done` checks the task off, anything else
- * un-checks it. Every other tag and [key::value] field is left untouched.
- * Returns the original content unchanged if lineNum doesn't point at a task
- * line (out of range, or not a checkbox).
+ * it, returns the file with that task's column tag replaced by `status`
+ * (pass null to remove it without adding a new one) - stripping whichever
+ * of `columns` (defaults to KANBAN_STATUSES) the task currently carries,
+ * not just the fixed three, so this works for a board's own custom column
+ * set too. The checkbox is synced to match: moving onto a column literally
+ * named "Done" (case-insensitive, wherever it sits in the list) checks the
+ * task off; moving onto anything else - or clearing the column entirely -
+ * un-checks it. A custom column set with no "Done" in it therefore never
+ * auto-completes a task; that's left for the user to manage some other
+ * way. Every other tag and [key::value] field is left untouched. Returns
+ * the original content unchanged if lineNum doesn't point at a task line
+ * (out of range, or not a checkbox).
  */
-export function setStatusTagInContent(content: string, lineNum: number, status: KanbanStatus | null): string {
+export function setStatusTagInContent(
+    content: string,
+    lineNum: number,
+    status: KanbanStatus | null,
+    columns: readonly string[] = KANBAN_STATUSES
+): string {
     const lines = content.split('\n');
     const idx = lineNum - 1;
     if (idx < 0 || idx >= lines.length) return content;
@@ -147,13 +202,13 @@ export function setStatusTagInContent(content: string, lineNum: number, status: 
 
     const [, indent, , rawBody] = m;
     let raw = rawBody ?? '';
-    for (const kt of KANBAN_STATUSES) {
+    for (const kt of columns) {
         raw = raw.replace(new RegExp(`#${kt}\\b`, 'gi'), '');
     }
     raw = raw.trim();
     if (status) raw = `${raw} #${status}`.trim();
 
-    const checkbox = status === 'Done' ? 'x' : ' ';
+    const checkbox = status?.toLowerCase() === 'done' ? 'x' : ' ';
     lines[idx] = `${indent ?? ''}- [${checkbox}] ${raw}`;
     return lines.join('\n');
 }

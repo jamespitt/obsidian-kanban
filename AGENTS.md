@@ -43,10 +43,10 @@ This repository is dedicated to the development of a modern, feature-rich Kanban
     settings.ts          # Settings interface and defaults
     taskModel.ts         # Pure parsing/editing logic, no Obsidian API dependency - see tests/taskModel.test.ts
     view.ts              # Kanban board TextFileView (vault scanning, rendering, drag-and-drop, note creation)
-    CreateBoardModal.ts  # Modal for naming a new board + its optional tag filter
-    EditFilterModal.ts   # Modal for editing an existing board's tag filter
+    CreateBoardModal.ts  # Modal for naming a new board + its optional filter/columns
+    EditBoardModal.ts    # Modal for editing an existing board's filter/columns
   ```
-  A board is a `.kanban` file (`registerExtensions` in `main.ts`), like the original version of this plugin - but unlike that version, a board file's content is only ever a tag filter (`parseBoardFilter`/`serializeBoardFilter` in `taskModel.ts`), never card data. Cards always come from a live vault scan of real task lines; nothing task-related is ever written into a board file.
+  A board is a `.kanban` file (`registerExtensions` in `main.ts`), like the original version of this plugin - but unlike that version, a board file's content is only ever a tag filter and column list (`parseBoardFilter`/`parseBoardColumns`/`serializeBoardConfig` in `taskModel.ts`), never card data. Cards always come from a live vault scan of real task lines; nothing task-related is ever written into a board file. Columns default to `KANBAN_STATUSES` (To Do/In Progress/Done, matching task-front-end/task_viewer.py) unless a board defines its own; `kanbanStatus`/`filterKanban`/`setStatusTagInContent` all take a `columns` parameter (defaulting to `KANBAN_STATUSES`) rather than hard-coding the three, and `columnLabel` derives a display label for any column tag, custom or default, by splitting camelCase/underscore boundaries.
   `taskModel.ts` is deliberately Obsidian-independent so it can be smoke-tested outside the plugin sandbox (`node_modules/.bin/esbuild tests/taskModel.test.ts --bundle --platform=node --outfile=/tmp/t.js && node /tmp/t.js` - there's no configured test runner, this project uses plain assertion scripts). Keep new pure logic there and vault I/O in `view.ts`, rather than mixing them.
 - **Do not commit build artifacts**: Never commit `node_modules/`, `main.js`, or other generated files.
 - **Release artifacts**: Must end up at the top level of the plugin folder in the vault (`main.js`, `manifest.json`, `styles.css`).

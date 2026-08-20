@@ -48,7 +48,7 @@ export class KanbanSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Board columns')
-			.setDesc('Fixed: To Do / In Progress / Done, driven by #ToDo / #InProgress / #Done tags on your tasks - the same convention used by task_viewer.py and the task-front-end web app. A task needs one of these tags to appear on the board.');
+			.setDesc('Default: To Do / In Progress / Done, driven by #ToDo / #InProgress / #Done tags on your tasks - the same convention used by task_viewer.py and the task-front-end web app. A task needs one of a board\'s column tags to appear on it. Each board can define its own columns instead, via its "Edit board" action - see README.md.');
 
 		new Setting(containerEl)
 			.setName('New note folder')
