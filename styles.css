@@ -127,6 +127,9 @@
 }
 
 .kanban-card-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     color: var(--text-muted);
     background: none;
     border: none;
@@ -134,6 +137,11 @@
     font-size: var(--font-ui-smaller);
     cursor: pointer;
     box-shadow: none;
+}
+
+.kanban-card-note svg {
+    width: 12px;
+    height: 12px;
 }
 
 .kanban-card-note:hover {

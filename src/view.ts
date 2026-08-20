@@ -1,4 +1,4 @@
-import { TextFileView, WorkspaceLeaf, TFile, Notice, Menu, debounce, Debouncer } from 'obsidian';
+import { TextFileView, WorkspaceLeaf, TFile, Notice, Menu, debounce, Debouncer, setIcon } from 'obsidian';
 import KanbanPlugin from './main';
 import { EditBoardModal } from './EditBoardModal';
 import {
@@ -244,7 +244,9 @@ export class KanbanView extends TextFileView {
         if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote) {
             const metaEl = cardEl.createDiv({ cls: 'kanban-card-meta' });
             if (linkedNote) {
-                const noteBtn = metaEl.createEl('button', { cls: 'kanban-card-note', text: `\u{1F4C4} ${linkedNote}` });
+                const noteBtn = metaEl.createEl('button', { cls: 'kanban-card-note', attr: { title: linkedNote } });
+                setIcon(noteBtn.createSpan(), 'file-text');
+                noteBtn.createSpan({ text: 'Linked note' });
                 noteBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     void this.openLinkedNote(task, linkedNote);
