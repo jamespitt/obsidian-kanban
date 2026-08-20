@@ -168,6 +168,12 @@ export function noteTitleFromTask(taskTitle: string): string {
     return truncated || 'Untitled note';
 }
 
+/** Extracts the first `[[Note Title]]` link from a task's title, if any - same as task-front-end's extractWikilink. */
+export function extractWikilink(title: string): string | null {
+    const m = /\[\[([^\]]+)\]\]/.exec(title);
+    return m?.[1] ?? null;
+}
+
 // Non-global copies of TAG_RE/DATAVIEW_RE for single-match lookups below -
 // deliberately not reusing the module-level `g`-flagged ones, since calling
 // .exec() on those directly would mutate their shared lastIndex.

@@ -126,6 +126,20 @@
     padding: 0 6px;
 }
 
+.kanban-card-note {
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.kanban-card-note:hover {
+    color: var(--text-accent);
+}
+
 .kanban-card-move {
     display: flex;
     justify-content: space-between;

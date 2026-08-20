@@ -13,7 +13,8 @@ import {
     parseBoardFilter,
     serializeBoardFilter,
     noteTitleFromTask,
-    addNoteLinkToContent
+    addNoteLinkToContent,
+    extractWikilink
 } from './taskModel';
 
 export const KANBAN_VIEW_TYPE = 'kanban-board-view';
@@ -194,14 +195,24 @@ export class KanbanView extends TextFileView {
         cardEl.addEventListener('click', () => {
             void this.openTaskSource(task);
         });
+        const linkedNote = extractWikilink(task.title);
+
         cardEl.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             const menu = new Menu();
-            menu.addItem((item) => {
-                item.setTitle('Create note from card')
-                    .setIcon('file-plus')
-                    .onClick(() => { void this.createNoteFromCard(task); });
-            });
+            if (linkedNote) {
+                menu.addItem((item) => {
+                    item.setTitle('Open linked note')
+                        .setIcon('file-text')
+                        .onClick(() => { void this.openLinkedNote(task, linkedNote); });
+                });
+            } else {
+                menu.addItem((item) => {
+                    item.setTitle('Create note from card')
+                        .setIcon('file-plus')
+                        .onClick(() => { void this.createNoteFromCard(task); });
+                });
+            }
             menu.addItem((item) => {
                 item.setTitle('Open source')
                     .setIcon('file-text')
@@ -213,8 +224,15 @@ export class KanbanView extends TextFileView {
         cardEl.createDiv({ cls: 'kanban-card-title', text: task.title });
 
         const otherTags = task.tags.filter((t) => t.toLowerCase() !== status.toLowerCase());
-        if (task.listName || task.due || task.priority || otherTags.length > 0) {
+        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote) {
             const metaEl = cardEl.createDiv({ cls: 'kanban-card-meta' });
+            if (linkedNote) {
+                const noteBtn = metaEl.createEl('button', { cls: 'kanban-card-note', text: `\u{1F4C4} ${linkedNote}` });
+                noteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    void this.openLinkedNote(task, linkedNote);
+                });
+            }
             if (task.listName) metaEl.createSpan({ cls: 'kanban-card-list', text: task.listName });
             if (task.due) metaEl.createSpan({ cls: 'kanban-card-due', text: `\u{1F4C5} ${task.due.slice(0, 10)}` });
             if (task.priority) metaEl.createSpan({ cls: 'kanban-card-priority', text: `↑ ${task.priority}` });
@@ -282,43 +300,8 @@ export class KanbanView extends TextFileView {
      */
     private async createNoteFromCard(task: Task): Promise<void> {
         const noteTitle = noteTitleFromTask(task.title);
-        const folderPath = this.plugin.settings.newNoteFolder.trim().replace(/^\/+|\/+$/g, '');
-        const templatePath = this.plugin.settings.newNoteTemplate.trim();
-
-        if (folderPath && !this.app.vault.getAbstractFileByPath(folderPath)) {
-            try {
-                await this.app.vault.createFolder(folderPath);
-            } catch (e) {
-                new Notice(`Failed to create folder ${folderPath}: ${e instanceof Error ? e.message : String(e)}`);
-                return;
-            }
-        }
-
-        const fullPath = `${folderPath ? folderPath + '/' : ''}${noteTitle}.md`;
-        const existing = this.app.vault.getAbstractFileByPath(fullPath);
-        let file: TFile;
-
-        if (existing instanceof TFile) {
-            new Notice(`Note already exists: ${noteTitle}`);
-            file = existing;
-        } else {
-            let content = `# ${noteTitle}\n\n`;
-            if (templatePath) {
-                const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
-                if (templateFile instanceof TFile) {
-                    content = await this.app.vault.read(templateFile);
-                } else {
-                    new Notice(`Note template not found: ${templatePath}, using default content`);
-                }
-            }
-            try {
-                file = await this.app.vault.create(fullPath, content);
-            } catch (e) {
-                new Notice(`Failed to create note: ${e instanceof Error ? e.message : String(e)}`);
-                return;
-            }
-            new Notice(`Created note: ${noteTitle}`);
-        }
+        const file = await this.createAndOpenNote(noteTitle);
+        if (!file) return;
 
         const sourceFile = this.app.vault.getAbstractFileByPath(task.filePath);
         if (sourceFile instanceof TFile) {
@@ -331,7 +314,73 @@ export class KanbanView extends TextFileView {
         }
 
         await this.refreshTasks();
+    }
+
+    /**
+     * Opens a card's already-linked note, resolving `linkedNote` the same
+     * way Obsidian resolves any `[[wikilink]]` (shortest unambiguous path
+     * from the task's own file, not just a basename guess). If the link is
+     * broken - the note was renamed or deleted - offers to recreate it at
+     * that exact name instead of silently failing.
+     */
+    private async openLinkedNote(task: Task, linkedNote: string): Promise<void> {
+        const dest = this.app.metadataCache.getFirstLinkpathDest(linkedNote, task.filePath);
+        if (dest) {
+            const leaf = this.app.workspace.getLeaf(true);
+            await leaf.openFile(dest);
+            return;
+        }
+        new Notice(`"${linkedNote}" doesn't exist yet - creating it.`);
+        await this.createAndOpenNote(linkedNote);
+    }
+
+    /**
+     * Creates (or, if it already exists, just opens) a note by title in the
+     * configured new-note folder/template, and opens it in a new leaf.
+     * Content starts empty - the note's filename is already its title in
+     * Obsidian's own UI, so a leading "# Title" heading would just be
+     * redundant duplication of it.
+     */
+    private async createAndOpenNote(noteTitle: string): Promise<TFile | null> {
+        const folderPath = this.plugin.settings.newNoteFolder.trim().replace(/^\/+|\/+$/g, '');
+        const templatePath = this.plugin.settings.newNoteTemplate.trim();
+
+        if (folderPath && !this.app.vault.getAbstractFileByPath(folderPath)) {
+            try {
+                await this.app.vault.createFolder(folderPath);
+            } catch (e) {
+                new Notice(`Failed to create folder ${folderPath}: ${e instanceof Error ? e.message : String(e)}`);
+                return null;
+            }
+        }
+
+        const fullPath = `${folderPath ? folderPath + '/' : ''}${noteTitle}.md`;
+        const existing = this.app.vault.getAbstractFileByPath(fullPath);
+        let file: TFile;
+
+        if (existing instanceof TFile) {
+            file = existing;
+        } else {
+            let content = '';
+            if (templatePath) {
+                const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
+                if (templateFile instanceof TFile) {
+                    content = await this.app.vault.read(templateFile);
+                } else {
+                    new Notice(`Note template not found: ${templatePath}, using an empty note`);
+                }
+            }
+            try {
+                file = await this.app.vault.create(fullPath, content);
+            } catch (e) {
+                new Notice(`Failed to create note: ${e instanceof Error ? e.message : String(e)}`);
+                return null;
+            }
+            new Notice(`Created note: ${noteTitle}`);
+        }
+
         const leaf = this.app.workspace.getLeaf(true);
         await leaf.openFile(file);
+        return file;
     }
 }

@@ -8,7 +8,8 @@ import {
     parseBoardFilter,
     serializeBoardFilter,
     noteTitleFromTask,
-    addNoteLinkToContent
+    addNoteLinkToContent,
+    extractWikilink
 } from '../src/taskModel';
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
@@ -130,6 +131,13 @@ function run() {
 
     const linkedOutOfRange = addNoteLinkToContent(linkFile, 99, 'Some Note');
     assertEqual(linkedOutOfRange, linkFile, 'is a no-op for an out-of-range line number');
+
+    // --- extractWikilink ---
+
+    assertEqual(extractWikilink('Buy milk   [[Groceries Plan]] #groceries'), 'Groceries Plan',
+        'extracts the wikilink target from a title');
+    assertEqual(extractWikilink('Buy milk #groceries'), null, 'null when there is no wikilink');
+    assertEqual(extractWikilink('Two links [[First]] [[Second]]'), 'First', 'takes the first wikilink when there are several');
 
     console.debug('\nAll taskModel checks passed.');
 }
