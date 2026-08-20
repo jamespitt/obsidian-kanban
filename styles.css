@@ -5,6 +5,12 @@
     background-color: var(--background-primary);
 }
 
+.kanban-board-filter {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
 .kanban-columns {
     display: flex;
     gap: 16px;

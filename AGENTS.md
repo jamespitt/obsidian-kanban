@@ -36,17 +36,18 @@ This repository is dedicated to the development of a modern, feature-rich Kanban
 ## File & Folder Conventions
 
 - **Organize code into multiple files**: Source lives in `src/`. Keep `main.ts` small and focused on plugin lifecycle (loading, unloading, registering commands).
-- **Recommended Structure**:
+- **Current structure** (see README.md for what each does):
   ```
   src/
-    main.ts           # Plugin entry point, lifecycle management
-    settings.ts       # Settings interface and defaults
-    parser.ts         # Markdown-to-Kanban parsing logic
-    view.ts           # Kanban board view implementation
-    types.ts          # TypeScript interfaces and types
-    commands/         # Command implementations
-    ui/               # UI components, modals
+    main.ts              # Plugin entry point, lifecycle management, registers .kanban as a file type
+    settings.ts          # Settings interface and defaults
+    taskModel.ts         # Pure parsing/editing logic, no Obsidian API dependency - see tests/taskModel.test.ts
+    view.ts              # Kanban board TextFileView (vault scanning, rendering, drag-and-drop, note creation)
+    CreateBoardModal.ts  # Modal for naming a new board + its optional tag filter
+    EditFilterModal.ts   # Modal for editing an existing board's tag filter
   ```
+  A board is a `.kanban` file (`registerExtensions` in `main.ts`), like the original version of this plugin - but unlike that version, a board file's content is only ever a tag filter (`parseBoardFilter`/`serializeBoardFilter` in `taskModel.ts`), never card data. Cards always come from a live vault scan of real task lines; nothing task-related is ever written into a board file.
+  `taskModel.ts` is deliberately Obsidian-independent so it can be smoke-tested outside the plugin sandbox (`node_modules/.bin/esbuild tests/taskModel.test.ts --bundle --platform=node --outfile=/tmp/t.js && node /tmp/t.js` - there's no configured test runner, this project uses plain assertion scripts). Keep new pure logic there and vault I/O in `view.ts`, rather than mixing them.
 - **Do not commit build artifacts**: Never commit `node_modules/`, `main.js`, or other generated files.
 - **Release artifacts**: Must end up at the top level of the plugin folder in the vault (`main.js`, `manifest.json`, `styles.css`).
 

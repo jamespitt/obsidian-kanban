@@ -8,10 +8,17 @@ export interface KanbanSettings {
 	// notesmd-cli's server config, just scoped to one folder here for
 	// simplicity.
 	taskFolder: string;
+	// Where "Create note from card" puts new notes. Empty = vault root.
+	newNoteFolder: string;
+	// Vault-relative path to a template file used as the new note's starting
+	// content. Empty = just "# Title".
+	newNoteTemplate: string;
 }
 
 export const DEFAULT_SETTINGS: KanbanSettings = {
 	taskFolder: '',
+	newNoteFolder: '',
+	newNoteTemplate: '',
 }
 
 export class KanbanSettingTab extends PluginSettingTab {
@@ -42,6 +49,28 @@ export class KanbanSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Board columns')
 			.setDesc('Fixed: To Do / In Progress / Done, driven by #ToDo / #InProgress / #Done tags on your tasks - the same convention used by task_viewer.py and the task-front-end web app. A task needs one of these tags to appear on the board.');
+
+		new Setting(containerEl)
+			.setName('New note folder')
+			.setDesc('Where notes created from a board card are placed. Leave blank for the vault root.')
+			.addText(text => text
+				.setPlaceholder('Projects')
+				.setValue(this.plugin.settings.newNoteFolder)
+				.onChange(async (value) => {
+					this.plugin.settings.newNoteFolder = value.trim();
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('New note template')
+			.setDesc('Vault-relative path to a note used as the starting content for notes created from a card. Leave blank for a plain title-only note.')
+			.addText(text => text
+				.setPlaceholder('Templates/Project.md')
+				.setValue(this.plugin.settings.newNoteTemplate)
+				.onChange(async (value) => {
+					this.plugin.settings.newNoteTemplate = value.trim();
+					await this.plugin.saveSettings();
+				}));
 	}
 
 	private refreshViews() {

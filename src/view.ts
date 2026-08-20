@@ -1,5 +1,6 @@
-import { ItemView, WorkspaceLeaf, TFile, Notice, debounce, Debouncer } from 'obsidian';
+import { TextFileView, WorkspaceLeaf, TFile, Notice, Menu, debounce, Debouncer } from 'obsidian';
 import KanbanPlugin from './main';
+import { EditFilterModal } from './EditFilterModal';
 import {
     Task,
     KanbanStatus,
@@ -7,7 +8,12 @@ import {
     parseTaskLine,
     kanbanStatus,
     filterKanban,
-    setStatusTagInContent
+    matchesFilter,
+    setStatusTagInContent,
+    parseBoardFilter,
+    serializeBoardFilter,
+    noteTitleFromTask,
+    addNoteLinkToContent
 } from './taskModel';
 
 export const KANBAN_VIEW_TYPE = 'kanban-board-view';
@@ -19,15 +25,18 @@ const COLUMN_LABELS: Record<KanbanStatus, string> = {
 };
 
 /**
- * A single global board over the vault's real tasks, driven by the
- * #ToDo/#InProgress/#Done tags - the same convention task_viewer.py (TUI)
- * and task-front-end (web) use. There's no separate ".kanban" file format
- * here: this view just reads and edits the same markdown task lines those
- * other clients do.
+ * A board over the vault's real tasks, driven by the #ToDo/#InProgress/#Done
+ * tags - the same convention task_viewer.py (TUI) and task-front-end (web)
+ * use. A board is a `.kanban` file, like the original version of this
+ * plugin, but its content is only ever a tag filter (see taskModel's
+ * parseBoardFilter/serializeBoardFilter) - never task data. Tasks always
+ * live in, and are edited in place in, their real source files; a board is
+ * just a saved, reopenable view over a subset of them.
  */
-export class KanbanView extends ItemView {
+export class KanbanView extends TextFileView {
     plugin: KanbanPlugin;
     private tasks: Task[] = [];
+    private filterTags: string[] = [];
     private draggedTask: Task | null = null;
     private scheduleRefresh: Debouncer<[], void>;
 
@@ -35,7 +44,7 @@ export class KanbanView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.icon = 'layout-grid';
-        this.scheduleRefresh = debounce(() => { void this.refresh(); }, 400, true);
+        this.scheduleRefresh = debounce(() => { void this.refreshTasks(); }, 400, true);
     }
 
     getViewType(): string {
@@ -43,25 +52,46 @@ export class KanbanView extends ItemView {
     }
 
     getDisplayText(): string {
-        return 'Kanban board';
+        return this.file?.basename ?? 'Kanban board';
+    }
+
+    getViewData(): string {
+        return serializeBoardFilter(this.filterTags);
+    }
+
+    setViewData(data: string, _clear: boolean): void {
+        this.filterTags = parseBoardFilter(data);
+        void this.refreshTasks();
+    }
+
+    clear(): void {
+        this.tasks = [];
+        this.filterTags = [];
     }
 
     async onOpen(): Promise<void> {
-        this.registerEvent(this.app.vault.on('modify', () => this.scheduleRefresh()));
+        this.registerEvent(this.app.vault.on('modify', (f) => {
+            if (f instanceof TFile && f.path === this.file?.path) return;
+            this.scheduleRefresh();
+        }));
         this.registerEvent(this.app.vault.on('create', () => this.scheduleRefresh()));
         this.registerEvent(this.app.vault.on('delete', () => this.scheduleRefresh()));
         this.registerEvent(this.app.vault.on('rename', () => this.scheduleRefresh()));
 
-        this.addAction('refresh-cw', 'Refresh', () => { void this.refresh(); });
-
-        await this.refresh();
+        this.addAction('refresh-cw', 'Refresh', () => { void this.refreshTasks(); });
+        this.addAction('filter', 'Edit filter', () => this.editFilter());
     }
 
     async onClose(): Promise<void> {
         this.scheduleRefresh.cancel();
     }
 
+    /** Public entry point for external callers (e.g. the settings tab) to force a rescan. */
     async refresh(): Promise<void> {
+        await this.refreshTasks();
+    }
+
+    private async refreshTasks(): Promise<void> {
         this.tasks = await this.scanTasks();
         this.render();
     }
@@ -87,16 +117,29 @@ export class KanbanView extends ItemView {
         return tasks;
     }
 
+    private editFilter(): void {
+        new EditFilterModal(this.app, this.filterTags.join(', '), (input) => {
+            this.filterTags = input.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
+            this.requestSave();
+            this.render();
+        }).open();
+    }
+
     private render(): void {
         const container = this.contentEl;
         container.empty();
         container.addClass('kanban-board-container');
 
-        const board = filterKanban(this.tasks);
+        const board = filterKanban(this.tasks).filter((t) => matchesFilter(t, this.filterTags));
         const columns: Record<KanbanStatus, Task[]> = { ToDo: [], InProgress: [], Done: [] };
         for (const task of board) {
             const status = kanbanStatus(task);
             if (status) columns[status].push(task);
+        }
+
+        if (this.filterTags.length > 0) {
+            const filterEl = container.createDiv({ cls: 'kanban-board-filter' });
+            filterEl.setText(`Filtered to: ${this.filterTags.map((t) => `#${t}`).join(', ')}`);
         }
 
         const boardEl = container.createDiv({ cls: 'kanban-columns' });
@@ -150,6 +193,21 @@ export class KanbanView extends ItemView {
         });
         cardEl.addEventListener('click', () => {
             void this.openTaskSource(task);
+        });
+        cardEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const menu = new Menu();
+            menu.addItem((item) => {
+                item.setTitle('Create note from card')
+                    .setIcon('file-plus')
+                    .onClick(() => { void this.createNoteFromCard(task); });
+            });
+            menu.addItem((item) => {
+                item.setTitle('Open source')
+                    .setIcon('file-text')
+                    .onClick(() => { void this.openTaskSource(task); });
+            });
+            menu.showAtMouseEvent(e);
         });
 
         cardEl.createDiv({ cls: 'kanban-card-title', text: task.title });
@@ -212,6 +270,68 @@ export class KanbanView extends ItemView {
         } catch (e) {
             new Notice(`Failed to update task: ${e instanceof Error ? e.message : String(e)}`);
         }
-        await this.refresh();
+        await this.refreshTasks();
+    }
+
+    /**
+     * Creates a new note for a card and links the task to it - a
+     * `[[Note Title]]` inserted into the task line right after its title,
+     * matching the `Title   [[Project Note]]` convention already used
+     * throughout the vault. Unlike the original plugin, the task line
+     * itself (all its tags/fields) is preserved; only the link is added.
+     */
+    private async createNoteFromCard(task: Task): Promise<void> {
+        const noteTitle = noteTitleFromTask(task.title);
+        const folderPath = this.plugin.settings.newNoteFolder.trim().replace(/^\/+|\/+$/g, '');
+        const templatePath = this.plugin.settings.newNoteTemplate.trim();
+
+        if (folderPath && !this.app.vault.getAbstractFileByPath(folderPath)) {
+            try {
+                await this.app.vault.createFolder(folderPath);
+            } catch (e) {
+                new Notice(`Failed to create folder ${folderPath}: ${e instanceof Error ? e.message : String(e)}`);
+                return;
+            }
+        }
+
+        const fullPath = `${folderPath ? folderPath + '/' : ''}${noteTitle}.md`;
+        const existing = this.app.vault.getAbstractFileByPath(fullPath);
+        let file: TFile;
+
+        if (existing instanceof TFile) {
+            new Notice(`Note already exists: ${noteTitle}`);
+            file = existing;
+        } else {
+            let content = `# ${noteTitle}\n\n`;
+            if (templatePath) {
+                const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
+                if (templateFile instanceof TFile) {
+                    content = await this.app.vault.read(templateFile);
+                } else {
+                    new Notice(`Note template not found: ${templatePath}, using default content`);
+                }
+            }
+            try {
+                file = await this.app.vault.create(fullPath, content);
+            } catch (e) {
+                new Notice(`Failed to create note: ${e instanceof Error ? e.message : String(e)}`);
+                return;
+            }
+            new Notice(`Created note: ${noteTitle}`);
+        }
+
+        const sourceFile = this.app.vault.getAbstractFileByPath(task.filePath);
+        if (sourceFile instanceof TFile) {
+            try {
+                await this.app.vault.process(sourceFile, (content) =>
+                    addNoteLinkToContent(content, task.lineNum, noteTitle));
+            } catch (e) {
+                new Notice(`Note created, but failed to link the task: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        }
+
+        await this.refreshTasks();
+        const leaf = this.app.workspace.getLeaf(true);
+        await leaf.openFile(file);
     }
 }

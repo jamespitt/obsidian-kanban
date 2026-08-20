@@ -1,4 +1,15 @@
-import { parseTaskLine, kanbanStatus, filterKanban, setStatusTagInContent, KANBAN_STATUSES } from '../src/taskModel';
+import {
+    parseTaskLine,
+    kanbanStatus,
+    filterKanban,
+    setStatusTagInContent,
+    KANBAN_STATUSES,
+    matchesFilter,
+    parseBoardFilter,
+    serializeBoardFilter,
+    noteTitleFromTask,
+    addNoteLinkToContent
+} from '../src/taskModel';
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
     const a = JSON.stringify(actual);
@@ -72,6 +83,53 @@ function run() {
     assertEqual(uncheckedFromDone.trimEnd(), '- [ ] Done item #ToDo', 'un-checks the box when moving off Done');
 
     assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
+
+    // --- matchesFilter ---
+
+    const projectTask = parseTaskLine('- [ ] Do the thing #ToDo #ProjectX', 'Work.md', 1)!;
+    assertEqual(matchesFilter(projectTask, []), true, 'empty filter matches everything');
+    assertEqual(matchesFilter(projectTask, ['ProjectX']), true, 'matches a tag it carries');
+    assertEqual(matchesFilter(projectTask, ['#ProjectX']), true, 'filter tag with a leading # still matches');
+    assertEqual(matchesFilter(projectTask, ['projectx']), true, 'matching is case-insensitive');
+    assertEqual(matchesFilter(projectTask, ['ProjectY']), false, 'does not match an unrelated tag');
+    assertEqual(matchesFilter(projectTask, ['ProjectY', 'ProjectX']), true, 'matches if any filter tag is carried');
+
+    // --- parseBoardFilter / serializeBoardFilter ---
+
+    assertEqual(parseBoardFilter(''), [], 'empty board file has no filter');
+    assertEqual(parseBoardFilter('filter: ProjectX, Home Fixes'), ['ProjectX', 'Home Fixes'],
+        'parses a comma-separated filter line');
+    assertEqual(parseBoardFilter('filter: #ProjectX'), ['ProjectX'], 'strips a leading # from a filtered tag');
+    assertEqual(parseBoardFilter('%% some comment %%\nfilter: ProjectX\n'), ['ProjectX'],
+        'finds the filter line regardless of other content');
+    assertEqual(parseBoardFilter('filter:'), [], 'a blank filter line means no filter');
+
+    const roundTrip = parseBoardFilter(serializeBoardFilter(['ProjectX', 'Home Fixes']));
+    assertEqual(roundTrip, ['ProjectX', 'Home Fixes'], 'serializeBoardFilter round-trips through parseBoardFilter');
+    const roundTripEmpty = parseBoardFilter(serializeBoardFilter([]));
+    assertEqual(roundTripEmpty, [], 'serializeBoardFilter round-trips an empty filter');
+
+    // --- noteTitleFromTask ---
+
+    assertEqual(noteTitleFromTask('Buy milk'), 'Buy milk', 'leaves a safe title unchanged');
+    assertEqual(noteTitleFromTask('Fix "the" thing?/*'), 'Fix the thing', 'strips filesystem-unsafe characters');
+    assertEqual(noteTitleFromTask('   '), 'Untitled note', 'falls back to "Untitled note" when empty after cleaning');
+    assertEqual(noteTitleFromTask('x'.repeat(100)).length, 80, 'truncates long titles to 80 chars');
+
+    // --- addNoteLinkToContent ---
+
+    const linkFile = '# Work\n\n- [ ] Buy milk #groceries #ToDo [due::2026-08-20]\n- [ ] Bare task\n';
+
+    const linked = addNoteLinkToContent(linkFile, 3, 'Groceries Plan');
+    assertEqual(linked.split('\n')[2], '- [ ] Buy milk   [[Groceries Plan]] #groceries #ToDo [due::2026-08-20]',
+        'inserts the note link right after the title, before tags/fields');
+
+    const linkedBare = addNoteLinkToContent(linkFile, 4, 'Some Note');
+    assertEqual(linkedBare.split('\n')[3], '- [ ] Bare task   [[Some Note]]',
+        'appends cleanly to a task with no tags/fields');
+
+    const linkedOutOfRange = addNoteLinkToContent(linkFile, 99, 'Some Note');
+    assertEqual(linkedOutOfRange, linkFile, 'is a no-op for an out-of-range line number');
 
     console.debug('\nAll taskModel checks passed.');
 }
