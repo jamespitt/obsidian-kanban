@@ -45,6 +45,11 @@ function run() {
     assertEqual(tWithSourceAndUser.source, '/meetings/Standup', 'parses source field');
     assertEqual(tWithSourceAndUser.user, 'James Pitt', 'parses user field');
 
+    const tWithCreated = parseTaskLine('- [ ] Follow up on tests [created: 2026-09-18] #ToTriage', 'Work.md', 1);
+    if (!tWithCreated) throw new Error('FAIL: expected a task, got null');
+    assertEqual(tWithCreated.title, 'Follow up on tests', 'strips created date from title');
+    assertEqual(tWithCreated.created, '2026-09-18', 'parses created date');
+
     const notATask = parseTaskLine('Just a line of text', 'Work.md', 1);
     assertEqual(notATask, null, 'non-task lines return null');
 
@@ -113,7 +118,21 @@ function run() {
     assertEqual(leavesOtherTags.trimEnd(), '- [ ] Ship it  #urgent #InReview',
         "only the board's own column tags are stripped - a non-column tag like #urgent is left alone");
 
-    assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
+    // --- setDueDateInContent ---
+    const dueTestFile = '- [ ] Buy bread #groceries [due::2026-09-01]\n- [ ] Plain task\n';
+    const dueUpdated = setDueDateInContent(dueTestFile, 1, '2026-09-18');
+    assertEqual(dueUpdated.split('\n')[0], '- [ ] Buy bread #groceries [due::2026-09-18]',
+        'setDueDateInContent updates an existing due date');
+
+    const dueRemoved = setDueDateInContent(dueTestFile, 1, null);
+    assertEqual(dueRemoved.split('\n')[0], '- [ ] Buy bread #groceries',
+        'setDueDateInContent removes an existing due date');
+
+    const dueAdded = setDueDateInContent(dueTestFile, 2, '2026-09-18');
+    assertEqual(dueAdded.split('\n')[1], '- [ ] Plain task [due::2026-09-18]',
+        'setDueDateInContent adds a due date if none existed');
+
+    assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done', 'Delete'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
 
     // --- matchesFilter ---
 
@@ -135,8 +154,8 @@ function run() {
         'finds the filter line regardless of other content');
     assertEqual(parseBoardFilter('filter:'), [], 'a blank filter line means no filter');
 
-    assertEqual(parseBoardColumns(''), ['ToDo', 'InProgress', 'Done'], 'no columns line means the default columns');
-    assertEqual(parseBoardColumns('columns:'), ['ToDo', 'InProgress', 'Done'], 'a blank columns line also means the default');
+    assertEqual(parseBoardColumns(''), ['ToDo', 'InProgress', 'Done', 'Delete'], 'no columns line means the default columns');
+    assertEqual(parseBoardColumns('columns:'), ['ToDo', 'InProgress', 'Done', 'Delete'], 'a blank columns line also means the default');
     assertEqual(parseBoardColumns('columns: Backlog, InReview, Shipped'), ['Backlog', 'InReview', 'Shipped'],
         'parses a custom comma-separated column line, order preserved');
     assertEqual(parseBoardColumns('filter: ProjectX\ncolumns: Backlog, Done'), ['Backlog', 'Done'],
@@ -151,7 +170,7 @@ function run() {
     assertEqual(columnsRoundTrip, ['Backlog', 'InReview', 'Shipped'],
         'serializeBoardConfig round-trips custom columns through parseBoardColumns');
     const columnsRoundTripDefault = parseBoardColumns(serializeBoardConfig([], []));
-    assertEqual(columnsRoundTripDefault, ['ToDo', 'InProgress', 'Done'],
+    assertEqual(columnsRoundTripDefault, ['ToDo', 'InProgress', 'Done', 'Delete'],
         'serializeBoardConfig with no columns round-trips to the default columns');
 
     // --- columnLabel ---

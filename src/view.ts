@@ -16,8 +16,10 @@ import {
     columnLabel,
     noteTitleFromTask,
     addNoteLinkToContent,
-    extractWikilink
+    extractWikilink,
+    setDueDateInContent
 } from './taskModel';
+import { DueDatePickerModal } from './DueDatePickerModal';
 
 export const KANBAN_VIEW_TYPE = 'kanban-board-view';
 
@@ -201,6 +203,25 @@ export class KanbanView extends TextFileView {
         if (task.status === 'completed') cardEl.addClass('kanban-card--completed');
         cardEl.setAttr('draggable', 'true');
 
+        // Quick Actions (Done and Delete buttons in the top-right corner on hover)
+        const quickActionsEl = cardEl.createDiv({ cls: 'kanban-card-quick-actions' });
+        
+        const doneBtn = quickActionsEl.createEl('button', { cls: 'kanban-card-quick-btn kanban-card-quick-done', attr: { title: 'Mark done' } });
+        setIcon(doneBtn, 'check');
+        doneBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const doneCol = this.columns.find(c => c.toLowerCase() === 'done') ?? 'Done';
+            void this.moveTask(task, doneCol);
+        });
+
+        const deleteBtn = quickActionsEl.createEl('button', { cls: 'kanban-card-quick-btn kanban-card-quick-delete', attr: { title: 'Mark delete' } });
+        setIcon(deleteBtn, 'trash');
+        deleteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const deleteCol = this.columns.find(c => c.toLowerCase() === 'delete') ?? 'Delete';
+            void this.moveTask(task, deleteCol);
+        });
+
         cardEl.addEventListener('dragstart', (e) => {
             this.draggedTask = task;
             cardEl.addClass('kanban-card--dragging');
@@ -231,6 +252,15 @@ export class KanbanView extends TextFileView {
                 });
             }
             menu.addItem((item) => {
+                item.setTitle(task.due ? 'Edit due date' : 'Set due date')
+                    .setIcon('calendar')
+                    .onClick(() => {
+                        new DueDatePickerModal(this.app, task.due ? task.due.slice(0, 10) : '', (date) => {
+                            void this.setTaskDueDate(task, date);
+                        }).open();
+                    });
+            });
+            menu.addItem((item) => {
                 item.setTitle('Open source')
                     .setIcon('file-text')
                     .onClick(() => { void this.openTaskSource(task); });
@@ -241,7 +271,7 @@ export class KanbanView extends TextFileView {
         cardEl.createDiv({ cls: 'kanban-card-title', text: task.title });
 
         const otherTags = task.tags.filter((t) => t.toLowerCase() !== status.toLowerCase());
-        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote || task.source || task.user) {
+        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote || task.source || task.user || task.created) {
             const metaEl = cardEl.createDiv({ cls: 'kanban-card-meta' });
             if (linkedNote) {
                 const noteBtn = metaEl.createEl('button', { cls: 'kanban-card-note', attr: { title: linkedNote } });
@@ -274,8 +304,22 @@ export class KanbanView extends TextFileView {
                     });
                 }
             }
+            if (task.created) {
+                const createdEl = metaEl.createSpan({ cls: 'kanban-card-created', attr: { title: `Created: ${task.created}` } });
+                setIcon(createdEl.createSpan(), 'calendar-days');
+                createdEl.createSpan({ text: `Created: ${task.created.slice(0, 10)}` });
+            }
             if (task.listName) metaEl.createSpan({ cls: 'kanban-card-list', text: task.listName });
-            if (task.due) metaEl.createSpan({ cls: 'kanban-card-due', text: `\u{1F4C5} ${task.due.slice(0, 10)}` });
+            if (task.due) {
+                const dueBtn = metaEl.createEl('button', { cls: 'kanban-card-due-btn', attr: { title: 'Edit due date' } });
+                dueBtn.createSpan({ text: `\u{1F4C5} ${task.due.slice(0, 10)}` });
+                dueBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    new DueDatePickerModal(this.app, task.due ? task.due.slice(0, 10) : '', (date) => {
+                        void this.setTaskDueDate(task, date);
+                    }).open();
+                });
+            }
             if (task.priority) metaEl.createSpan({ cls: 'kanban-card-priority', text: `↑ ${task.priority}` });
             for (const tag of otherTags) {
                 metaEl.createSpan({ cls: 'kanban-card-tag', text: `#${tag}` });
@@ -328,6 +372,20 @@ export class KanbanView extends TextFileView {
             await this.app.vault.process(file, (content) => setStatusTagInContent(content, task.lineNum, status, this.columns));
         } catch (e) {
             new Notice(`Failed to update task: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        await this.refreshTasks();
+    }
+
+    private async setTaskDueDate(task: Task, dueDate: string): Promise<void> {
+        const file = this.app.vault.getAbstractFileByPath(task.filePath);
+        if (!(file instanceof TFile)) {
+            new Notice(`Could not find ${task.filePath}`);
+            return;
+        }
+        try {
+            await this.app.vault.process(file, (content) => setDueDateInContent(content, task.lineNum, dueDate || null));
+        } catch (e) {
+            new Notice(`Failed to update due date: ${e instanceof Error ? e.message : String(e)}`);
         }
         await this.refreshTasks();
     }

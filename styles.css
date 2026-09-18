@@ -76,6 +76,8 @@
     border: 1px solid var(--background-modifier-border);
     border-radius: 6px;
     padding: 10px;
+    padding-right: 48px;
+    position: relative;
     cursor: pointer;
     transition: opacity 0.1s ease, box-shadow 0.1s ease;
 }
@@ -180,4 +182,83 @@
 
 .kanban-card-move-spacer {
     flex: 1 1 auto;
+}
+
+/* Quick Actions (Done and Delete buttons on hover) */
+.kanban-card-quick-actions {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+}
+
+.kanban-card:hover .kanban-card-quick-actions {
+    opacity: 1;
+}
+
+.kanban-card-quick-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.kanban-card-quick-btn svg {
+    width: 12px;
+    height: 12px;
+}
+
+.kanban-card-quick-done:hover {
+    background-color: var(--background-modifier-success) !important;
+    color: var(--text-on-accent) !important;
+    border-color: var(--background-modifier-success) !important;
+}
+
+.kanban-card-quick-delete:hover {
+    background-color: var(--background-modifier-error) !important;
+    color: var(--text-on-accent) !important;
+    border-color: var(--background-modifier-error) !important;
+}
+
+/* Interactive Due Date Button */
+.kanban-card-due-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.kanban-card-due-btn:hover {
+    color: var(--text-accent);
+}
+
+/* Created Date Metadata */
+.kanban-card-created {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+
+.kanban-card-created svg {
+    width: 12px;
+    height: 12px;
 }
