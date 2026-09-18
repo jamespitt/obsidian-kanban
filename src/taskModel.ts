@@ -18,15 +18,18 @@ export interface Task {
     repeat?: string;
     tags: string[];
     listName: string; // file stem, e.g. "Work.md" -> "Work"
+    source?: string;
+    user?: string;
+    created?: string;
 }
 
-// The three mutually-exclusive tags used when a board doesn't specify its
+// The mutually-exclusive tags used when a board doesn't specify its
 // own custom columns (see parseBoardColumns below) - matches KanbanTags/
 // KANBAN_STATUSES in pkg/tasks and api.ts exactly, which is what keeps a
 // default board's columns showing the same set of tasks as task-front-end's
 // Kanban tab and task_viewer.py's Kanban view. A board with custom columns
 // necessarily diverges from those two, since they only know this fixed set.
-export const KANBAN_STATUSES = ['ToDo', 'InProgress', 'Done'] as const;
+export const KANBAN_STATUSES = ['ToDo', 'InProgress', 'Done', 'Delete'] as const;
 // Any tag name can be a column once boards can define their own, so this is
 // just a readability alias now, not a closed union.
 export type KanbanStatus = string;
@@ -34,6 +37,7 @@ export type KanbanStatus = string;
 const TASK_LINE_RE = /^(\s*)-\s*\[([xX ])\]\s+(.*)$/;
 const DATAVIEW_RE = /\[([^\]]+?)::([^\]]*)\]/g;
 const TAG_RE = /#([\w/]+)/g;
+const CREATED_RE = /\[created\s*::?\s*([^\]]+)\]/gi;
 
 /** Parses a single line into a Task, or null if it isn't a task checkbox. */
 export function parseTaskLine(line: string, filePath: string, lineNum: number): Task | null {
@@ -50,6 +54,9 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
         fields[key] = value;
     }
 
+    const createdMatch = /\[created\s*::?\s*([^\]]+)\]/i.exec(rawBody ?? '');
+    const created = createdMatch ? createdMatch[1]?.trim() : undefined;
+
     const tags: string[] = [];
     for (const tm of (rawBody ?? '').matchAll(TAG_RE)) {
         if (tm[1]) tags.push(tm[1]);
@@ -57,6 +64,7 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
 
     const title = (rawBody ?? '')
         .replace(DATAVIEW_RE, '')
+        .replace(CREATED_RE, '')
         .replace(TAG_RE, '')
         .trim();
 
@@ -72,7 +80,10 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
         priority: fields.priority,
         repeat: fields.repeat,
         tags,
-        listName
+        listName,
+        source: fields.source,
+        user: fields.user,
+        created: created || fields.created
     };
 }
 
@@ -267,5 +278,39 @@ export function addNoteLinkToContent(content: string, lineNum: number, noteTitle
         ? `${titlePart}   [[${noteTitle}]] ${restPart}`
         : `${titlePart}   [[${noteTitle}]]`;
     lines[idx] = `${indent ?? ''}- [${statusChar}] ${newRaw}`;
+    return lines.join('\n');
+}
+
+/**
+ * Sets, updates, or removes the `due::YYYY-MM-DD` field in a task line.
+ * Returns the modified content, preserving all other fields and spacing.
+ */
+export function setDueDateInContent(content: string, lineNum: number, due: string | null): string {
+    const lines = content.split('\n');
+    const idx = lineNum - 1;
+    if (idx < 0 || idx >= lines.length) return content;
+
+    const line = lines[idx];
+    if (line === undefined) return content;
+    const m = TASK_LINE_RE.exec(line);
+    if (!m) return content;
+
+    const [, indent, statusChar, rawBody] = m;
+    let raw = rawBody ?? '';
+
+    const dueFieldRe = /\s*\[due\s*::\s*[^\]]*\]/gi;
+    if (dueFieldRe.test(raw)) {
+        if (due) {
+            raw = raw.replace(/\[due\s*::\s*[^\]]*\]/i, `[due::${due}]`);
+        } else {
+            raw = raw.replace(/\s*\[due\s*::\s*[^\]]*\]/i, '').trim();
+        }
+    } else {
+        if (due) {
+            raw = `${raw} [due::${due}]`.trim();
+        }
+    }
+
+    lines[idx] = `${indent ?? ''}- [${statusChar}] ${raw}`;
     return lines.join('\n');
 }

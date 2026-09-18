@@ -241,7 +241,7 @@ export class KanbanView extends TextFileView {
         cardEl.createDiv({ cls: 'kanban-card-title', text: task.title });
 
         const otherTags = task.tags.filter((t) => t.toLowerCase() !== status.toLowerCase());
-        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote) {
+        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote || task.source || task.user) {
             const metaEl = cardEl.createDiv({ cls: 'kanban-card-meta' });
             if (linkedNote) {
                 const noteBtn = metaEl.createEl('button', { cls: 'kanban-card-note', attr: { title: linkedNote } });
@@ -251,6 +251,28 @@ export class KanbanView extends TextFileView {
                     e.stopPropagation();
                     void this.openLinkedNote(task, linkedNote);
                 });
+            }
+            if (task.source) {
+                const sourceBtn = metaEl.createEl('button', { cls: 'kanban-card-source', attr: { title: task.source } });
+                setIcon(sourceBtn.createSpan(), 'link');
+                const sourceName = task.source.split('/').pop()?.replace(/\.md$/i, '') ?? task.source;
+                sourceBtn.createSpan({ text: sourceName });
+                sourceBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    void this.openLinkedNote(task, task.source!);
+                });
+            }
+            if (task.user) {
+                const users = task.user.split(',').map((u) => u.trim()).filter(Boolean);
+                for (const u of users) {
+                    const userBtn = metaEl.createEl('button', { cls: 'kanban-card-user', attr: { title: u } });
+                    setIcon(userBtn.createSpan(), 'user');
+                    userBtn.createSpan({ text: u });
+                    userBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        void this.openLinkedNote(task, u);
+                    });
+                }
             }
             if (task.listName) metaEl.createSpan({ cls: 'kanban-card-list', text: task.listName });
             if (task.due) metaEl.createSpan({ cls: 'kanban-card-due', text: `\u{1F4C5} ${task.due.slice(0, 10)}` });

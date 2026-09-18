@@ -126,7 +126,9 @@
     padding: 0 6px;
 }
 
-.kanban-card-note {
+.kanban-card-note,
+.kanban-card-source,
+.kanban-card-user {
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -139,12 +141,16 @@
     box-shadow: none;
 }
 
-.kanban-card-note svg {
+.kanban-card-note svg,
+.kanban-card-source svg,
+.kanban-card-user svg {
     width: 12px;
     height: 12px;
 }
 
-.kanban-card-note:hover {
+.kanban-card-note:hover,
+.kanban-card-source:hover,
+.kanban-card-user:hover {
     color: var(--text-accent);
 }
 

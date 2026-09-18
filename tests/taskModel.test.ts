@@ -11,7 +11,8 @@ import {
     columnLabel,
     noteTitleFromTask,
     addNoteLinkToContent,
-    extractWikilink
+    extractWikilink,
+    setDueDateInContent
 } from '../src/taskModel';
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
@@ -38,6 +39,11 @@ function run() {
     const t2 = parseTaskLine('    - [x] Done thing #Done', 'Work.md', 5);
     if (!t2) throw new Error('FAIL: expected a task, got null');
     assertEqual(t2.status, 'completed', 'parses checked status');
+
+    const tWithSourceAndUser = parseTaskLine('- [ ] Review plan #ToDo [source:: /meetings/Standup] [user:: James Pitt]', 'Tasks/Work.md', 4);
+    if (!tWithSourceAndUser) throw new Error('FAIL: expected a task, got null');
+    assertEqual(tWithSourceAndUser.source, '/meetings/Standup', 'parses source field');
+    assertEqual(tWithSourceAndUser.user, 'James Pitt', 'parses user field');
 
     const notATask = parseTaskLine('Just a line of text', 'Work.md', 1);
     assertEqual(notATask, null, 'non-task lines return null');
