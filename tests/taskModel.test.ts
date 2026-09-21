@@ -12,7 +12,8 @@ import {
     noteTitleFromTask,
     addNoteLinkToContent,
     extractWikilink,
-    setDueDateInContent
+    setDueDateInContent,
+    addSubtaskInContent
 } from '../src/taskModel';
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
@@ -143,6 +144,14 @@ function run() {
     const dueAddedWithTime = setDueDateInContent(dueTestFile, 2, '2026-09-18 14:30');
     assertEqual(dueAddedWithTime.split('\n')[1], '- [ ] Plain task [due::2026-09-18 14:30]',
         'setDueDateInContent adds a due date and time if none existed');
+
+    // --- addSubtaskInContent ---
+    const subtaskTestFile = '- [ ] Buy bread #groceries [due::2026-09-01]\n- [ ] Plain task\n';
+    const subtaskAdded = addSubtaskInContent(subtaskTestFile, 1, 'Slice it');
+    assertEqual(subtaskAdded.split('\n')[0], '- [ ] Buy bread #groceries [due::2026-09-01]',
+        'addSubtaskInContent preserves parent line');
+    assertEqual(subtaskAdded.split('\n')[1], '    - [ ] Slice it',
+        'addSubtaskInContent adds indented subtask checklist line');
 
     assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done', 'Delete'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
 

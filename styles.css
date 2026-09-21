@@ -271,3 +271,48 @@
     margin-bottom: 16px;
     flex-wrap: wrap;
 }
+
+/* Column Add Task Button */
+.kanban-column-add-btn {
+    width: calc(100% - 16px);
+    margin: 8px;
+    background: none;
+    border: 1px dashed var(--background-modifier-border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: var(--font-ui-small);
+    padding: 6px 12px;
+    text-align: center;
+    box-shadow: none;
+    transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+}
+
+.kanban-column-add-btn:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+    border-color: var(--text-accent);
+}
+
+/* Card Subtasks */
+.kanban-card-subtasks {
+    margin-top: 8px;
+    padding-top: 4px;
+    border-top: 1px solid var(--background-modifier-border);
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.kanban-card-subtask {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.kanban-card-subtask--completed {
+    text-decoration: line-through;
+    opacity: 0.6;
+}

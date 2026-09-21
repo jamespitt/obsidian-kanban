@@ -17,9 +17,12 @@ import {
     noteTitleFromTask,
     addNoteLinkToContent,
     extractWikilink,
-    setDueDateInContent
+    setDueDateInContent,
+    addSubtaskInContent
 } from './taskModel';
 import { DueDatePickerModal } from './DueDatePickerModal';
+import { AddTaskModal } from './AddTaskModal';
+import { AddSubtaskModal } from './AddSubtaskModal';
 
 export const KANBAN_VIEW_TYPE = 'kanban-board-view';
 
@@ -46,6 +49,7 @@ export class KanbanView extends TextFileView {
     private filterTags: string[] = [];
     private columns: string[] = [...KANBAN_STATUSES];
     private draggedTask: Task | null = null;
+    private scannedFiles: TFile[] = [];
     private scheduleRefresh: Debouncer<[], void>;
 
     constructor(leaf: WorkspaceLeaf, plugin: KanbanPlugin) {
@@ -114,6 +118,8 @@ export class KanbanView extends TextFileView {
             return f.path === `${folder}.md` || f.path.startsWith(`${folder}/`);
         });
 
+        this.scannedFiles = files;
+
         const tasks: Task[] = [];
         for (const file of files) {
             const content = await this.app.vault.cachedRead(file);
@@ -122,7 +128,35 @@ export class KanbanView extends TextFileView {
                 const line = lines[i];
                 if (line === undefined) continue;
                 const task = parseTaskLine(line, file.path, i + 1);
-                if (task) tasks.push(task);
+                if (task) {
+                    const parentIndent = line.match(/^(\s*)/)?.[1]?.length ?? 0;
+                    const subtasks: { title: string; checked: boolean }[] = [];
+                    
+                    let j = i + 1;
+                    while (j < lines.length) {
+                        const nextLine = lines[j];
+                        if (nextLine === undefined) break;
+                        
+                        const nextIndentMatch = nextLine.match(/^(\s*)/);
+                        const nextIndent = nextIndentMatch?.[1]?.length ?? 0;
+                        
+                        if (nextLine.trim() !== '') {
+                            if (nextIndent <= parentIndent) {
+                                break;
+                            }
+                            
+                            const subMatch = /^(\s*)-\s*\[([xX ])\]\s+(.*)$/.exec(nextLine);
+                            if (subMatch) {
+                                const checked = subMatch[2]?.toLowerCase() === 'x';
+                                const title = subMatch[3]?.trim() ?? '';
+                                subtasks.push({ title, checked });
+                            }
+                        }
+                        j++;
+                    }
+                    task.subtasks = subtasks;
+                    tasks.push(task);
+                }
             }
         }
         return tasks;
@@ -195,6 +229,11 @@ export class KanbanView extends TextFileView {
             for (const task of columns[status] ?? []) {
                 this.renderCard(bodyEl, task, status);
             }
+
+            const addBtn = colEl.createEl('button', { cls: 'kanban-column-add-btn', text: 'Add task' });
+            addBtn.addEventListener('click', () => {
+                this.openAddTaskModal(status);
+            });
         }
     }
 
@@ -261,6 +300,13 @@ export class KanbanView extends TextFileView {
                     });
             });
             menu.addItem((item) => {
+                item.setTitle('Add subtask')
+                    .setIcon('plus')
+                    .onClick(() => {
+                        this.openAddSubtaskModal(task);
+                    });
+            });
+            menu.addItem((item) => {
                 item.setTitle('Open source')
                     .setIcon('file-text')
                     .onClick(() => { void this.openTaskSource(task); });
@@ -269,6 +315,18 @@ export class KanbanView extends TextFileView {
         });
 
         cardEl.createDiv({ cls: 'kanban-card-title', text: task.title });
+
+        if (task.subtasks && task.subtasks.length > 0) {
+            const subtasksEl = cardEl.createDiv({ cls: 'kanban-card-subtasks' });
+            for (const sub of task.subtasks) {
+                const subEl = subtasksEl.createDiv({ cls: 'kanban-card-subtask' });
+                const checkIcon = sub.checked ? '☑' : '☐';
+                const subText = subEl.createSpan({ text: `${checkIcon} ${sub.title}` });
+                if (sub.checked) {
+                    subText.addClass('kanban-card-subtask--completed');
+                }
+            }
+        }
 
         const otherTags = task.tags.filter((t) => t.toLowerCase() !== status.toLowerCase());
         if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote || task.source || task.user || task.created) {
@@ -388,6 +446,49 @@ export class KanbanView extends TextFileView {
             new Notice(`Failed to update due date: ${e instanceof Error ? e.message : String(e)}`);
         }
         await this.refreshTasks();
+    }
+
+    private openAddTaskModal(status: KanbanStatus): void {
+        if (this.scannedFiles.length === 0) {
+            new Notice('No Markdown files found to add tasks to. Please create a Markdown note first.');
+            return;
+        }
+        new AddTaskModal(this.app, this.scannedFiles, async (title, filePath) => {
+            const file = this.app.vault.getAbstractFileByPath(filePath);
+            if (!(file instanceof TFile)) {
+                new Notice(`Could not find ${filePath}`);
+                return;
+            }
+            try {
+                const isDone = status.toLowerCase() === 'done';
+                const checkbox = isDone ? 'x' : ' ';
+                let tags = `#${status}`;
+                if (this.filterTags.length > 0) {
+                    tags += ' ' + this.filterTags.map(t => `#${t}`).join(' ');
+                }
+                const newTaskLine = `\n- [${checkbox}] ${title} ${tags}`;
+                await this.app.vault.append(file, newTaskLine);
+            } catch (e) {
+                new Notice(`Failed to add task: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            await this.refreshTasks();
+        }).open();
+    }
+
+    private openAddSubtaskModal(task: Task): void {
+        new AddSubtaskModal(this.app, async (subtaskTitle) => {
+            const file = this.app.vault.getAbstractFileByPath(task.filePath);
+            if (!(file instanceof TFile)) {
+                new Notice(`Could not find ${task.filePath}`);
+                return;
+            }
+            try {
+                await this.app.vault.process(file, (content) => addSubtaskInContent(content, task.lineNum, subtaskTitle));
+            } catch (e) {
+                new Notice(`Failed to add subtask: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            await this.refreshTasks();
+        }).open();
     }
 
     /**

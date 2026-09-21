@@ -21,6 +21,7 @@ export interface Task {
     source?: string;
     user?: string;
     created?: string;
+    subtasks?: { title: string; checked: boolean }[];
 }
 
 // The mutually-exclusive tags used when a board doesn't specify its
@@ -312,5 +313,27 @@ export function setDueDateInContent(content: string, lineNum: number, due: strin
     }
 
     lines[idx] = `${indent ?? ''}- [${statusChar}] ${raw}`;
+    return lines.join('\n');
+}
+
+/**
+ * Inserts a subtask checklist item indented one level deeper directly below the parent task.
+ * Returns the modified content.
+ */
+export function addSubtaskInContent(content: string, lineNum: number, subtaskTitle: string): string {
+    const lines = content.split('\n');
+    const idx = lineNum - 1;
+    if (idx < 0 || idx >= lines.length) return content;
+
+    const line = lines[idx];
+    if (line === undefined) return content;
+    const m = TASK_LINE_RE.exec(line);
+    if (!m) return content;
+
+    const [, indent] = m;
+    const subIndent = (indent ?? '') + '    ';
+    const subtaskLine = `${subIndent}- [ ] ${subtaskTitle}`;
+
+    lines.splice(lineNum, 0, subtaskLine);
     return lines.join('\n');
 }
