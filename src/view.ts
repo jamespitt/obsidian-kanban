@@ -255,7 +255,7 @@ export class KanbanView extends TextFileView {
                 item.setTitle(task.due ? 'Edit due date' : 'Set due date')
                     .setIcon('calendar')
                     .onClick(() => {
-                        new DueDatePickerModal(this.app, task.due ? task.due.slice(0, 10) : '', (date) => {
+                        new DueDatePickerModal(this.app, task.due || '', (date) => {
                             void this.setTaskDueDate(task, date);
                         }).open();
                     });
@@ -312,10 +312,10 @@ export class KanbanView extends TextFileView {
             if (task.listName) metaEl.createSpan({ cls: 'kanban-card-list', text: task.listName });
             if (task.due) {
                 const dueBtn = metaEl.createEl('button', { cls: 'kanban-card-due-btn', attr: { title: 'Edit due date' } });
-                dueBtn.createSpan({ text: `\u{1F4C5} ${task.due.slice(0, 10)}` });
+                dueBtn.createSpan({ text: `\u{1F4C5} ${task.due}` });
                 dueBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    new DueDatePickerModal(this.app, task.due ? task.due.slice(0, 10) : '', (date) => {
+                    new DueDatePickerModal(this.app, task.due || '', (date) => {
                         void this.setTaskDueDate(task, date);
                     }).open();
                 });

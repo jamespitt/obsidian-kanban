@@ -262,3 +262,12 @@
     width: 12px;
     height: 12px;
 }
+
+/* Preset Quick Action Buttons for Due Date Picker */
+.due-date-presets {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}

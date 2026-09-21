@@ -36,6 +36,10 @@ function run() {
     assertEqual(t1.listName, 'Work', 'derives list name from file stem');
     assertEqual(t1.lineNum, 3, 'preserves line number');
 
+    const tWithDateTime = parseTaskLine('- [ ] Buy milk #groceries #ToDo [due::2026-08-20 14:30]', 'Tasks/Work.md', 3);
+    if (!tWithDateTime) throw new Error('FAIL: expected a task, got null');
+    assertEqual(tWithDateTime.due, '2026-08-20 14:30', 'parses due date and time field');
+
     const t2 = parseTaskLine('    - [x] Done thing #Done', 'Work.md', 5);
     if (!t2) throw new Error('FAIL: expected a task, got null');
     assertEqual(t2.status, 'completed', 'parses checked status');
@@ -124,6 +128,10 @@ function run() {
     assertEqual(dueUpdated.split('\n')[0], '- [ ] Buy bread #groceries [due::2026-09-18]',
         'setDueDateInContent updates an existing due date');
 
+    const dueUpdatedWithTime = setDueDateInContent(dueTestFile, 1, '2026-09-18 14:30');
+    assertEqual(dueUpdatedWithTime.split('\n')[0], '- [ ] Buy bread #groceries [due::2026-09-18 14:30]',
+        'setDueDateInContent updates an existing due date with date and time');
+
     const dueRemoved = setDueDateInContent(dueTestFile, 1, null);
     assertEqual(dueRemoved.split('\n')[0], '- [ ] Buy bread #groceries',
         'setDueDateInContent removes an existing due date');
@@ -131,6 +139,10 @@ function run() {
     const dueAdded = setDueDateInContent(dueTestFile, 2, '2026-09-18');
     assertEqual(dueAdded.split('\n')[1], '- [ ] Plain task [due::2026-09-18]',
         'setDueDateInContent adds a due date if none existed');
+
+    const dueAddedWithTime = setDueDateInContent(dueTestFile, 2, '2026-09-18 14:30');
+    assertEqual(dueAddedWithTime.split('\n')[1], '- [ ] Plain task [due::2026-09-18 14:30]',
+        'setDueDateInContent adds a due date and time if none existed');
 
     assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done', 'Delete'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
 
