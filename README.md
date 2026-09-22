@@ -18,6 +18,12 @@ A Kanban board for Obsidian that reads and writes your **real tasks** - no separ
 
 - **Task folder**: the vault-relative folder to scan for tasks (recursively). Leave blank to scan the whole vault. This scopes every board; a board's own filter/columns (set per-board, not here - see How it works above) narrow further, by tag, within that scope.
 - **New note folder** / **New note template**: where "Create note from card" places new notes, and an optional template file for their starting content.
+- **Server (HTTP API mode)** - **Server URL** / **Username** / **Password** / **Vault**: optional. When **Server URL** is set, every board's card list and card moves go through [`notesmd-cli serve`](../notesmd-cli/API.md)'s HTTP API instead of scanning local vault files - useful on a device where the vault isn't (reliably) git-synced, but the server is reachable. Leave **Server URL** blank to keep boards fully local (the default, and the fallback if the server is unreachable). **Username**/**Password** are sent as HTTP Basic Auth on every request; **Vault** selects one of the server's configured vaults (blank = its default). Use the **Load vaults** and **Test connection** buttons to check the setup.
+
+  API mode only changes how a board's cards are *listed and moved* - clicking a card, linking/creating a note, adding a subtask, and setting a due date all still try the local vault file first, exactly as in local mode. A few known limitations:
+  - Adding a task, adding a subtask, and setting a due date always require the target file to exist locally in this device's vault (git sync must have caught up) - these aren't yet API-mode aware.
+  - If a task's source file hasn't synced to this device yet, opening it (or a linked note) falls back to a **read-only** view of the server's copy rather than editing it locally.
+  - Cards in API mode don't show the linked-note/created-by/user meta badges or the subtask checklist - the server's task data doesn't carry those fields, only the local file parser does.
 
 ## What this plugin intentionally doesn't do
 

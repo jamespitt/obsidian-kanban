@@ -10,6 +10,8 @@ import {
     filterKanban,
     matchesFilter,
     setStatusTagInContent,
+    applyKanbanStatus,
+    sameColumns,
     parseBoardFilter,
     parseBoardColumns,
     serializeBoardConfig,
@@ -23,12 +25,11 @@ import {
 import { DueDatePickerModal } from './DueDatePickerModal';
 import { AddTaskModal } from './AddTaskModal';
 import { AddSubtaskModal } from './AddSubtaskModal';
+import { ApiConfig, apiTaskToTask, fetchKanbanTasks, fetchNote, renameTask, setKanbanStatus } from './apiClient';
+import { obsidianRequest } from './obsidianRequest';
+import { RemoteNoteModal } from './RemoteNoteModal';
 
 export const KANBAN_VIEW_TYPE = 'kanban-board-view';
-
-function sameColumns(a: readonly string[], b: readonly string[]): boolean {
-    return a.length === b.length && a.every((c, i) => c.toLowerCase() === b[i]?.toLowerCase());
-}
 
 /**
  * A board over the vault's real tasks, driven by tag columns - by default
@@ -44,6 +45,8 @@ function sameColumns(a: readonly string[], b: readonly string[]): boolean {
  * them.
  */
 export class KanbanView extends TextFileView {
+    private static readonly API_POLL_INTERVAL_MS = 30_000;
+
     plugin: KanbanPlugin;
     private tasks: Task[] = [];
     private filterTags: string[] = [];
@@ -51,6 +54,21 @@ export class KanbanView extends TextFileView {
     private draggedTask: Task | null = null;
     private scannedFiles: TFile[] = [];
     private scheduleRefresh: Debouncer<[], void>;
+
+    /** True when this board reads/writes via notesmd-cli serve's HTTP API instead of local vault files. */
+    private apiMode(): boolean {
+        return this.plugin.settings.serverUrl.trim().length > 0;
+    }
+
+    private apiConfig(): ApiConfig {
+        const s = this.plugin.settings;
+        return {
+            serverUrl: s.serverUrl.trim().replace(/\/+$/, ''),
+            username: s.username,
+            password: s.password,
+            vaultId: s.vaultId.trim()
+        };
+    }
 
     constructor(leaf: WorkspaceLeaf, plugin: KanbanPlugin) {
         super(leaf);
@@ -93,6 +111,18 @@ export class KanbanView extends TextFileView {
         this.registerEvent(this.app.vault.on('delete', () => this.scheduleRefresh()));
         this.registerEvent(this.app.vault.on('rename', () => this.scheduleRefresh()));
 
+        // Vault events above don't fire for changes made purely server-side
+        // (e.g. from another device, or task-front-end), so API-mode boards
+        // also poll, plus refresh immediately when the leaf becomes active -
+        // covering the common "switch back to the board tab" case without
+        // waiting out the interval.
+        if (this.apiMode()) {
+            this.registerInterval(window.setInterval(() => { void this.refreshTasks(); }, KanbanView.API_POLL_INTERVAL_MS));
+        }
+        this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+            if (leaf === this.leaf && this.apiMode()) void this.refreshTasks();
+        }));
+
         this.addAction('refresh-cw', 'Refresh', () => { void this.refreshTasks(); });
         this.addAction('filter', 'Edit board (filter/columns)', () => this.editBoard());
     }
@@ -111,15 +141,33 @@ export class KanbanView extends TextFileView {
         this.render();
     }
 
-    private async scanTasks(): Promise<Task[]> {
+    private listCandidateFiles(): TFile[] {
         const folder = this.plugin.settings.taskFolder.trim().replace(/^\/+|\/+$/g, '');
-        const files = this.app.vault.getMarkdownFiles().filter((f) => {
+        return this.app.vault.getMarkdownFiles().filter((f) => {
             if (!folder) return true;
             return f.path === `${folder}.md` || f.path.startsWith(`${folder}/`);
         });
+    }
 
-        this.scannedFiles = files;
+    private async scanTasks(): Promise<Task[]> {
+        // Local file listing always runs regardless of mode - it feeds
+        // openAddTaskModal's destination picker, which stays local-only in
+        // both modes (see view.ts's "Left local-only in v1" scope note).
+        this.scannedFiles = this.listCandidateFiles();
+        return this.apiMode() ? this.scanTasksViaApi() : this.scanTasksLocal(this.scannedFiles);
+    }
 
+    private async scanTasksViaApi(): Promise<Task[]> {
+        try {
+            const apiTasks = await fetchKanbanTasks(obsidianRequest, this.apiConfig(), this.columns);
+            return apiTasks.map(apiTaskToTask);
+        } catch (e) {
+            new Notice(`Kanban: couldn't reach the server (${e instanceof Error ? e.message : String(e)}) - showing the last known list.`);
+            return this.tasks; // keep the last good list rather than clearing the board
+        }
+    }
+
+    private async scanTasksLocal(files: TFile[]): Promise<Task[]> {
         const tasks: Task[] = [];
         for (const file of files) {
             const content = await this.app.vault.cachedRead(file);
@@ -412,15 +460,33 @@ export class KanbanView extends TextFileView {
 
     private async openTaskSource(task: Task): Promise<void> {
         const file = this.app.vault.getAbstractFileByPath(task.filePath);
-        if (!(file instanceof TFile)) {
+        if (file instanceof TFile) {
+            const leaf = this.app.workspace.getLeaf(true);
+            await leaf.openFile(file, { eState: { line: task.lineNum - 1 } });
+            return;
+        }
+        // Not on this device yet (git-sync lag) - fall back to a read-only
+        // fetch from the server, only in API mode. Never a substitute for
+        // local editing when the file genuinely doesn't exist.
+        if (!this.apiMode()) {
             new Notice(`Could not find ${task.filePath}`);
             return;
         }
-        const leaf = this.app.workspace.getLeaf(true);
-        await leaf.openFile(file, { eState: { line: task.lineNum - 1 } });
+        try {
+            const note = await fetchNote(obsidianRequest, this.apiConfig(), task.filePath);
+            if (!note) {
+                new Notice(`Could not find ${task.filePath} locally or on the server.`);
+                return;
+            }
+            new RemoteNoteModal(this.app, note.path, note.content).open();
+        } catch (e) {
+            new Notice(`Could not open ${task.filePath}: ${e instanceof Error ? e.message : String(e)}`);
+        }
     }
 
     private async moveTask(task: Task, status: KanbanStatus): Promise<void> {
+        if (this.apiMode()) return this.moveTaskViaApi(task, status);
+
         const file = this.app.vault.getAbstractFileByPath(task.filePath);
         if (!(file instanceof TFile)) {
             new Notice(`Could not find ${task.filePath}`);
@@ -432,6 +498,23 @@ export class KanbanView extends TextFileView {
             new Notice(`Failed to update task: ${e instanceof Error ? e.message : String(e)}`);
         }
         await this.refreshTasks();
+    }
+
+    private async moveTaskViaApi(task: Task, status: KanbanStatus): Promise<void> {
+        const previous = this.tasks;
+        this.tasks = this.tasks.map((t) =>
+            (t.filePath === task.filePath && t.lineNum === task.lineNum) ? applyKanbanStatus(t, status, this.columns) : t
+        );
+        this.render(); // optimistic update, mirrors task-front-end's +page.svelte handleSetKanbanStatus
+        try {
+            await setKanbanStatus(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, status, this.columns);
+        } catch (e) {
+            this.tasks = previous;
+            this.render();
+            new Notice(`Failed to move task: ${e instanceof Error ? e.message : String(e)}`);
+            return;
+        }
+        await this.refreshTasks(); // reconcile with server truth, picks up concurrent edits from other devices
     }
 
     private async setTaskDueDate(task: Task, dueDate: string): Promise<void> {
@@ -499,6 +582,10 @@ export class KanbanView extends TextFileView {
      * itself (all its tags/fields) is preserved; only the link is added.
      */
     private async createNoteFromCard(task: Task): Promise<void> {
+        // Always local, in both modes - the plugin only ever runs inside a
+        // real local Obsidian vault, so creating a *new* note always works
+        // regardless of serverUrl. "Not on this device" only ever applies to
+        // an *existing* file (git-sync lag), never to one being created now.
         const noteTitle = noteTitleFromTask(task.title);
         const file = await this.createAndOpenNote(noteTitle);
         if (!file) return;
@@ -511,6 +598,18 @@ export class KanbanView extends TextFileView {
             } catch (e) {
                 new Notice(`Note created, but failed to link the task: ${e instanceof Error ? e.message : String(e)}`);
             }
+        } else if (this.apiMode()) {
+            // The task's own source file isn't local yet - link it via the
+            // server instead. The Tasks PATCH API has no dedicated
+            // "insert link into title" action, only whole-title rename, so
+            // this is the closest available equivalent to addNoteLinkToContent.
+            try {
+                await renameTask(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, `${task.title}   [[${noteTitle}]]`);
+            } catch (e) {
+                new Notice(`Note created, but failed to link the task on the server: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        } else {
+            new Notice(`Note created, but ${task.filePath} isn't on this device yet - the task wasn't linked.`);
         }
 
         await this.refreshTasks();
@@ -529,6 +628,21 @@ export class KanbanView extends TextFileView {
             const leaf = this.app.workspace.getLeaf(true);
             await leaf.openFile(dest);
             return;
+        }
+        if (this.apiMode()) {
+            // GET /api/notes/{path} does the same basename-fallback
+            // resolution Obsidian's getFirstLinkpathDest does locally, so
+            // check the server before assuming the link is actually broken.
+            try {
+                const note = await fetchNote(obsidianRequest, this.apiConfig(), linkedNote);
+                if (note) {
+                    new RemoteNoteModal(this.app, note.path, note.content).open();
+                    return;
+                }
+            } catch (e) {
+                new Notice(`Couldn't check the server for "${linkedNote}": ${e instanceof Error ? e.message : String(e)}`);
+                return;
+            }
         }
         new Notice(`"${linkedNote}" doesn't exist yet - creating it.`);
         await this.createAndOpenNote(linkedNote);

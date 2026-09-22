@@ -106,6 +106,11 @@ export function filterKanban(tasks: Task[], columns: readonly string[] = KANBAN_
     return tasks.filter((t) => kanbanStatus(t, columns) !== null);
 }
 
+/** True if two column lists are the same set, in the same order, case-insensitively. */
+export function sameColumns(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((c, i) => c.toLowerCase() === b[i]?.toLowerCase());
+}
+
 /**
  * A human-readable label for a column tag, splitting camelCase/underscore
  * boundaries and capitalizing the first letter - "ToDo" -> "To Do",
@@ -223,6 +228,26 @@ export function setStatusTagInContent(
     const checkbox = status?.toLowerCase() === 'done' ? 'x' : ' ';
     lines[idx] = `${indent ?? ''}- [${checkbox}] ${raw}`;
     return lines.join('\n');
+}
+
+/**
+ * The in-memory twin of setStatusTagInContent, for an optimistic UI update
+ * before a server round-trip (in API mode) confirms it - same rules, applied
+ * to a Task's `tags` array instead of raw file text: strips whichever of
+ * `columns` the task currently carries, adds `status` (or clears the column
+ * entirely for null), and syncs `status`'s completion the same way - a
+ * column literally named "Done" (any case) checks it off, anything else
+ * un-checks it. Returns a new Task; every other field is left untouched.
+ */
+export function applyKanbanStatus(task: Task, status: KanbanStatus | null, columns: readonly string[] = KANBAN_STATUSES): Task {
+    const columnsLower = new Set(columns.map((c) => c.toLowerCase()));
+    const tags = task.tags.filter((t) => !columnsLower.has(t.toLowerCase()));
+    if (status) tags.push(status);
+    return {
+        ...task,
+        tags,
+        status: status?.toLowerCase() === 'done' ? 'completed' : 'todo'
+    };
 }
 
 /** Characters not safe to use in an Obsidian note filename. */

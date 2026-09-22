@@ -316,3 +316,22 @@
     text-decoration: line-through;
     opacity: 0.6;
 }
+
+/* Remote Note Modal (API mode, file not yet synced locally) */
+.kanban-remote-note-notice {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.kanban-remote-note-content {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-small);
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    padding: 10px 12px;
+    max-height: 60vh;
+    overflow: auto;
+}

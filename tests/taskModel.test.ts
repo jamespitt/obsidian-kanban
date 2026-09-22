@@ -3,6 +3,8 @@ import {
     kanbanStatus,
     filterKanban,
     setStatusTagInContent,
+    applyKanbanStatus,
+    sameColumns,
     KANBAN_STATUSES,
     matchesFilter,
     parseBoardFilter,
@@ -122,6 +124,37 @@ function run() {
     const leavesOtherTags = setStatusTagInContent('- [ ] Ship it #Backlog #urgent\n', 1, 'InReview', ['Backlog', 'InReview']);
     assertEqual(leavesOtherTags.trimEnd(), '- [ ] Ship it  #urgent #InReview',
         "only the board's own column tags are stripped - a non-column tag like #urgent is left alone");
+
+    // --- sameColumns ---
+
+    assertEqual(sameColumns(['ToDo', 'InProgress'], ['ToDo', 'InProgress']), true, 'sameColumns matches identical lists');
+    assertEqual(sameColumns(['todo', 'INPROGRESS'], ['ToDo', 'InProgress']), true, 'sameColumns is case-insensitive');
+    assertEqual(sameColumns(['ToDo'], ['ToDo', 'InProgress']), false, 'sameColumns is false for different lengths');
+    assertEqual(sameColumns(['InProgress', 'ToDo'], ['ToDo', 'InProgress']), false, 'sameColumns is order-sensitive');
+
+    // --- applyKanbanStatus ---
+
+    const optimisticTask = parseTaskLine('- [ ] Buy milk #groceries #ToDo [due::2026-08-20]', 'Tasks/Work.md', 3)!;
+
+    const movedInMemory = applyKanbanStatus(optimisticTask, 'InProgress');
+    assertEqual(movedInMemory.tags, ['groceries', 'InProgress'], 'applyKanbanStatus swaps the column tag, keeps other tags');
+    assertEqual(movedInMemory.status, 'todo', 'applyKanbanStatus leaves status todo when not moving to Done');
+    assertEqual(optimisticTask.tags, ['groceries', 'ToDo'], 'applyKanbanStatus does not mutate the original task');
+
+    const completedInMemory = applyKanbanStatus(optimisticTask, 'Done');
+    assertEqual(completedInMemory.tags, ['groceries', 'Done'], 'applyKanbanStatus swaps to the Done tag');
+    assertEqual(completedInMemory.status, 'completed', 'applyKanbanStatus marks status completed when moving to Done');
+
+    const clearedInMemory = applyKanbanStatus(optimisticTask, null);
+    assertEqual(clearedInMemory.tags, ['groceries'], 'applyKanbanStatus removes the column tag entirely for null');
+    assertEqual(clearedInMemory.status, 'todo', 'applyKanbanStatus leaves status todo when clearing the column');
+
+    const customColumnTask = parseTaskLine('- [ ] Ship it #Backlog', 'Work.md', 1)!;
+    const movedCustom = applyKanbanStatus(customColumnTask, 'Shipped', ['Backlog', 'InReview', 'Shipped']);
+    assertEqual(movedCustom.tags, ['Shipped'], 'applyKanbanStatus respects a custom column list');
+
+    const movedCustomDone = applyKanbanStatus(customColumnTask, 'done', ['Backlog', 'InReview', 'done']);
+    assertEqual(movedCustomDone.status, 'completed', 'applyKanbanStatus completes on a custom column literally named "done"');
 
     // --- setDueDateInContent ---
     const dueTestFile = '- [ ] Buy bread #groceries [due::2026-09-01]\n- [ ] Plain task\n';
