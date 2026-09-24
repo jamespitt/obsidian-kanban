@@ -4,13 +4,18 @@ import {
     ApiRequestInit,
     ApiResponse,
     SERVER_DEFAULT_COLUMNS,
+    addSubtask,
+    addTask,
     apiTaskToTask,
     buildAuthHeader,
     fetchKanbanTasks,
+    fetchLists,
     fetchNote,
     fetchVaults,
     renameTask,
-    setKanbanStatus
+    setDueDate,
+    setKanbanStatus,
+    setTaskField
 } from '../src/apiClient';
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
@@ -130,6 +135,77 @@ async function run() {
             'setKanbanStatus surfaces a 400 from the server');
     }
 
+    // --- fetchLists / addTask / addSubtask / setDueDate ---
+
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, { lists: ['Obsidian', 'Action Items'] })]);
+        const lists = await fetchLists(request, configWithVault);
+        assertEqual(lists, ['Obsidian', 'Action Items'], 'fetchLists returns the lists array');
+        assertEqual(calls[0]?.url, 'https://tasks.example.com/api/tasks/lists?vault=work', 'fetchLists is vault-scoped');
+    }
+    {
+        const { request } = fakeRequest([jsonResponse(200, {})]);
+        assertEqual(await fetchLists(request, config), [], 'fetchLists defaults to [] when the key is missing');
+    }
+    {
+        const { request } = fakeRequest([jsonResponse(500, { error: 'boom' })]);
+        await assertThrows(() => fetchLists(request, config), 'boom', 'fetchLists surfaces a server error');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(201, { list: 'Action Items', title: 'x' })]);
+        await addTask(request, configWithVault, 'Action Items', 'Buy milk #ToDo');
+        assertEqual(calls[0]?.url, 'https://tasks.example.com/api/tasks/list/Action%20Items?vault=work',
+            'addTask URL-encodes the list name and is vault-scoped');
+        assertEqual(calls[0]?.init.method, 'POST', 'addTask uses POST');
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { title: 'Buy milk #ToDo' }, 'addTask sends only the title by default');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(201, {})]);
+        await addTask(request, config, 'Work', 'Ship it #Done', true);
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { title: 'Ship it #Done', status: 'completed' },
+            'addTask sends status "completed" for a task created in the Done column');
+    }
+    {
+        const { request } = fakeRequest([jsonResponse(404, { error: 'list "Nope" not found' })]);
+        await assertThrows(() => addTask(request, config, 'Nope', 'x'), 'not found', 'addTask surfaces a 404');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, {})]);
+        await addSubtask(request, config, 'Tasks/Work.md', 7, 'Do the thing');
+        assertEqual(calls[0]?.url, 'https://tasks.example.com/api/tasks/Tasks/Work.md', 'addSubtask targets the parent file');
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'add-subtask', line: 7, title: 'Do the thing' },
+            'addSubtask sends the parent line and title');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, {})]);
+        await setDueDate(request, config, 'Work.md', 3, '2026-09-30');
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'set-due', line: 3, due: '2026-09-30' }, 'setDueDate uses set-due');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, {})]);
+        await setDueDate(request, config, 'Work.md', 3, null);
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'edit', line: 3, due: '' },
+            'setDueDate clears via edit with an empty due (set-due rejects an empty date)');
+    }
+
+    // --- setTaskField ---
+
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, {})]);
+        await setTaskField(request, configWithVault, 'Tasks/Work.md', 3, 'scheduled', '2026-09-05T10:00');
+        assertEqual(calls[0]?.url, 'https://tasks.example.com/api/tasks/Tasks/Work.md?vault=work', 'setTaskField is vault-scoped and targets the file');
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'edit', line: 3, scheduled: '2026-09-05T10:00' }, 'setTaskField edits only the one field');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, {})]);
+        await setTaskField(request, config, 'Work.md', 3, 'priority', null);
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'edit', line: 3, priority: '' }, 'setTaskField clears a field with an empty string, not by omitting it');
+    }
+    {
+        const { request } = fakeRequest([jsonResponse(400, { error: 'bad repeat' })]);
+        await assertThrows(() => setTaskField(request, config, 'Work.md', 3, 'repeat', 'x'), 'bad repeat', 'setTaskField surfaces a server error');
+    }
+
     // --- renameTask ---
 
     {
@@ -189,6 +265,12 @@ async function run() {
         const task = apiTaskToTask(apiTask);
         assertEqual(task.due, undefined, 'apiTaskToTask leaves a missing due field undefined, not empty string');
         assertEqual(task.priority, undefined, 'apiTaskToTask leaves a missing priority field undefined');
+    }
+
+    {
+        const t = apiTaskToTask({ file_path: 'W.md', line_num: 1, title: 'x', status: 'todo', tags: [], list_name: 'W',
+            created: '2026-09-22', source: 'wiki/a.md', user: 'A, B' });
+        assertEqual([t.created, t.source, t.user], ['2026-09-22', 'wiki/a.md', 'A, B'], 'apiTaskToTask carries created/source/user from the server');
     }
 
     console.debug('\nAll apiClient checks passed.');

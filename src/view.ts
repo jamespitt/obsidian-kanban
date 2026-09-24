@@ -20,12 +20,14 @@ import {
     addNoteLinkToContent,
     extractWikilink,
     setDueDateInContent,
+    setFieldInContent,
     addSubtaskInContent
 } from './taskModel';
 import { DueDatePickerModal } from './DueDatePickerModal';
-import { AddTaskModal } from './AddTaskModal';
+import { AddTaskModal, AddTaskTarget } from './AddTaskModal';
 import { AddSubtaskModal } from './AddSubtaskModal';
-import { ApiConfig, apiTaskToTask, fetchKanbanTasks, fetchNote, renameTask, setKanbanStatus } from './apiClient';
+import { FieldEditModal } from './FieldEditModal';
+import { ApiConfig, addSubtask, addTask, apiTaskToTask, fetchKanbanTasks, fetchLists, fetchNote, renameTask, setDueDate, setKanbanStatus, setTaskField } from './apiClient';
 import { obsidianRequest } from './obsidianRequest';
 import { RemoteNoteModal } from './RemoteNoteModal';
 
@@ -150,9 +152,9 @@ export class KanbanView extends TextFileView {
     }
 
     private async scanTasks(): Promise<Task[]> {
-        // Local file listing always runs regardless of mode - it feeds
-        // openAddTaskModal's destination picker, which stays local-only in
-        // both modes (see view.ts's "Left local-only in v1" scope note).
+        // Local file listing always runs regardless of mode: local mode reads
+        // cards from it and add-task's destination picker uses it (API mode
+        // gets its destinations from the server instead - see openAddTaskModal).
         this.scannedFiles = this.listCandidateFiles();
         return this.apiMode() ? this.scanTasksViaApi() : this.scanTasksLocal(this.scannedFiles);
     }
@@ -280,7 +282,7 @@ export class KanbanView extends TextFileView {
 
             const addBtn = colEl.createEl('button', { cls: 'kanban-column-add-btn', text: 'Add task' });
             addBtn.addEventListener('click', () => {
-                this.openAddTaskModal(status);
+                void this.openAddTaskModal(status);
             });
         }
     }
@@ -357,6 +359,18 @@ export class KanbanView extends TextFileView {
                         }).open();
                     });
             });
+            const fieldItems: { field: 'scheduled' | 'priority' | 'repeat'; label: string; icon: string }[] = [
+                { field: 'scheduled', label: 'scheduled date', icon: 'calendar-clock' },
+                { field: 'priority', label: 'priority', icon: 'arrow-up' },
+                { field: 'repeat', label: 'repeat rule', icon: 'repeat' }
+            ];
+            for (const { field, label, icon } of fieldItems) {
+                menu.addItem((item) => {
+                    item.setTitle(`${task[field] ? 'Edit' : 'Set'} ${label}`)
+                        .setIcon(icon)
+                        .onClick(() => { this.editTaskField(task, field); });
+                });
+            }
             menu.addItem((item) => {
                 item.setTitle('Add subtask')
                     .setIcon('plus')
@@ -387,7 +401,7 @@ export class KanbanView extends TextFileView {
         }
 
         const otherTags = task.tags.filter((t) => t.toLowerCase() !== status.toLowerCase());
-        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote || task.source || task.user || task.created) {
+        if (task.listName || task.due || task.priority || otherTags.length > 0 || linkedNote || task.source || task.user) {
             const metaEl = cardEl.createDiv({ cls: 'kanban-card-meta' });
             if (linkedNote) {
                 const noteBtn = metaEl.createEl('button', { cls: 'kanban-card-note', attr: { title: linkedNote } });
@@ -420,11 +434,6 @@ export class KanbanView extends TextFileView {
                     });
                 }
             }
-            if (task.created) {
-                const createdEl = metaEl.createSpan({ cls: 'kanban-card-created', attr: { title: `Created: ${task.created}` } });
-                setIcon(createdEl.createSpan(), 'calendar-days');
-                createdEl.createSpan({ text: `Created: ${task.created.slice(0, 10)}` });
-            }
             if (task.listName) metaEl.createSpan({ cls: 'kanban-card-list', text: task.listName });
             if (task.due) {
                 const dueBtn = metaEl.createEl('button', { cls: 'kanban-card-due-btn', attr: { title: 'Edit due date' } });
@@ -436,9 +445,45 @@ export class KanbanView extends TextFileView {
                     }).open();
                 });
             }
-            if (task.priority) metaEl.createSpan({ cls: 'kanban-card-priority', text: `↑ ${task.priority}` });
+            if (task.priority) {
+                const priorityBtn = metaEl.createEl('button', { cls: 'kanban-card-priority kanban-card-field-btn', attr: { title: 'Edit priority' } });
+                priorityBtn.createSpan({ text: `↑ ${task.priority}` });
+                priorityBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.editTaskField(task, 'priority');
+                });
+            }
             for (const tag of otherTags) {
                 metaEl.createSpan({ cls: 'kanban-card-tag', text: `#${tag}` });
+            }
+        }
+
+        // Second, muted row: when the task was created and its scheduled/repeat
+        // fields. Scheduled and repeat are click-to-edit, like the due date.
+        if (task.created || task.scheduled || task.repeat) {
+            const detailEl = cardEl.createDiv({ cls: 'kanban-card-meta kanban-card-meta--secondary' });
+            if (task.created) {
+                const createdEl = detailEl.createSpan({ cls: 'kanban-card-created', attr: { title: `Created: ${task.created}` } });
+                setIcon(createdEl.createSpan(), 'calendar-days');
+                createdEl.createSpan({ text: `Created ${task.created.slice(0, 10)}` });
+            }
+            if (task.scheduled) {
+                const schedBtn = detailEl.createEl('button', { cls: 'kanban-card-field-btn', attr: { title: 'Edit scheduled date' } });
+                setIcon(schedBtn.createSpan(), 'calendar-clock');
+                schedBtn.createSpan({ text: `Scheduled ${task.scheduled.replace('T', ' ')}` });
+                schedBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.editTaskField(task, 'scheduled');
+                });
+            }
+            if (task.repeat) {
+                const repeatBtn = detailEl.createEl('button', { cls: 'kanban-card-field-btn', attr: { title: 'Edit repeat rule' } });
+                setIcon(repeatBtn.createSpan(), 'repeat');
+                repeatBtn.createSpan({ text: task.repeat });
+                repeatBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.editTaskField(task, 'repeat');
+                });
             }
         }
 
@@ -528,6 +573,15 @@ export class KanbanView extends TextFileView {
     }
 
     private async setTaskDueDate(task: Task, dueDate: string): Promise<void> {
+        if (this.apiMode()) {
+            try {
+                await setDueDate(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, dueDate || null);
+            } catch (e) {
+                new Notice(`Failed to update due date: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            await this.refreshTasks();
+            return;
+        }
         const file = this.app.vault.getAbstractFileByPath(task.filePath);
         if (!(file instanceof TFile)) {
             new Notice(`Could not find ${task.filePath}`);
@@ -541,26 +595,78 @@ export class KanbanView extends TextFileView {
         await this.refreshTasks();
     }
 
-    private openAddTaskModal(status: KanbanStatus): void {
-        if (this.scannedFiles.length === 0) {
-            new Notice('No Markdown files found to add tasks to. Please create a Markdown note first.');
+    /** Opens the editor for one of a card's in-place editable fields and saves the result. */
+    private editTaskField(task: Task, field: 'scheduled' | 'priority' | 'repeat'): void {
+        new FieldEditModal(this.app, field, task[field] ?? '', (value) => {
+            void this.saveTaskField(task, field, value);
+        }).open();
+    }
+
+    private async saveTaskField(task: Task, field: 'scheduled' | 'priority' | 'repeat', value: string | null): Promise<void> {
+        if (this.apiMode()) {
+            try {
+                await setTaskField(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, field, value);
+            } catch (e) {
+                new Notice(`Failed to update ${field}: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            await this.refreshTasks();
             return;
         }
-        new AddTaskModal(this.app, this.scannedFiles, async (title, filePath) => {
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (!(file instanceof TFile)) {
-                new Notice(`Could not find ${filePath}`);
+        const file = this.app.vault.getAbstractFileByPath(task.filePath);
+        if (!(file instanceof TFile)) {
+            new Notice(`Could not find ${task.filePath}`);
+            return;
+        }
+        try {
+            await this.app.vault.process(file, (content) => setFieldInContent(content, task.lineNum, field, value));
+        } catch (e) {
+            new Notice(`Failed to update ${field}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        await this.refreshTasks();
+    }
+
+    private async openAddTaskModal(status: KanbanStatus): Promise<void> {
+        // In API mode the destinations are the server's lists and the task is
+        // created there, so it exists immediately for every client. Writing it
+        // to this device's vault copy instead would leave it invisible to the
+        // server (and everything reading through it) until git catches up.
+        let targets: AddTaskTarget[];
+        if (this.apiMode()) {
+            try {
+                targets = (await fetchLists(obsidianRequest, this.apiConfig())).map((name) => ({ value: name, label: name }));
+            } catch (e) {
+                new Notice(`Could not load lists from the server: ${e instanceof Error ? e.message : String(e)}`);
                 return;
             }
+            if (targets.length === 0) {
+                new Notice('The server has no task lists to add tasks to.');
+                return;
+            }
+        } else {
+            if (this.scannedFiles.length === 0) {
+                new Notice('No Markdown files found to add tasks to. Please create a Markdown note first.');
+                return;
+            }
+            targets = this.scannedFiles.map((f) => ({ value: f.path, label: f.basename }));
+        }
+
+        new AddTaskModal(this.app, targets, async (title, target) => {
+            const isDone = status.toLowerCase() === 'done';
+            let tags = `#${status}`;
+            if (this.filterTags.length > 0) {
+                tags += ' ' + this.filterTags.map(t => `#${t}`).join(' ');
+            }
             try {
-                const isDone = status.toLowerCase() === 'done';
-                const checkbox = isDone ? 'x' : ' ';
-                let tags = `#${status}`;
-                if (this.filterTags.length > 0) {
-                    tags += ' ' + this.filterTags.map(t => `#${t}`).join(' ');
+                if (this.apiMode()) {
+                    await addTask(obsidianRequest, this.apiConfig(), target, `${title} ${tags}`, isDone);
+                } else {
+                    const file = this.app.vault.getAbstractFileByPath(target);
+                    if (!(file instanceof TFile)) {
+                        new Notice(`Could not find ${target}`);
+                        return;
+                    }
+                    await this.app.vault.append(file, `\n- [${isDone ? 'x' : ' '}] ${title} ${tags}`);
                 }
-                const newTaskLine = `\n- [${checkbox}] ${title} ${tags}`;
-                await this.app.vault.append(file, newTaskLine);
             } catch (e) {
                 new Notice(`Failed to add task: ${e instanceof Error ? e.message : String(e)}`);
             }
@@ -570,6 +676,15 @@ export class KanbanView extends TextFileView {
 
     private openAddSubtaskModal(task: Task): void {
         new AddSubtaskModal(this.app, async (subtaskTitle) => {
+            if (this.apiMode()) {
+                try {
+                    await addSubtask(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, subtaskTitle);
+                } catch (e) {
+                    new Notice(`Failed to add subtask: ${e instanceof Error ? e.message : String(e)}`);
+                }
+                await this.refreshTasks();
+                return;
+            }
             const file = this.app.vault.getAbstractFileByPath(task.filePath);
             if (!(file instanceof TFile)) {
                 new Notice(`Could not find ${task.filePath}`);

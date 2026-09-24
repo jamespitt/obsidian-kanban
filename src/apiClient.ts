@@ -9,7 +9,7 @@
 // page-scoped singleton - multiple open boards must each use their own
 // settings snapshot.
 
-import { KanbanStatus, KANBAN_STATUSES, Task, sameColumns } from './taskModel';
+import { EditableField, KanbanStatus, KANBAN_STATUSES, Task, sameColumns } from './taskModel';
 
 // The server's own fixed default (notesmd-cli/pkg/tasks/tasks.go:282) - NOT
 // the same as this plugin's local KANBAN_STATUSES, which adds a 4th
@@ -56,6 +56,9 @@ export interface ApiTask {
     tags: string[];
     list_name: string;
     google_id?: string;
+    created?: string;
+    source?: string;
+    user?: string;
 }
 
 export interface VaultInfo {
@@ -140,6 +143,56 @@ export async function renameTask(request: ApiRequestFn, config: ApiConfig, fileP
     if (res.status < 200 || res.status >= 300) throw await errorFor('rename task', res);
 }
 
+/** GET /api/tasks/lists: the list (file stem) names the server can add tasks to. */
+export async function fetchLists(request: ApiRequestFn, config: ApiConfig): Promise<string[]> {
+    const url = withVaultParam(`${apiBase(config)}/tasks/lists`, config);
+    const res = await request(url, { method: 'GET', headers: headers(config) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor('load lists', res);
+    const body = res.json as { lists?: string[] } | null;
+    return body?.lists ?? [];
+}
+
+/**
+ * POST /api/tasks/list/{name}. `title` is the raw text after the checkbox, so
+ * it may already carry #tags. `completed` writes `- [x]` (servers that predate
+ * the `status` field ignore it and write `- [ ]`).
+ */
+export async function addTask(request: ApiRequestFn, config: ApiConfig, listName: string, title: string, completed = false): Promise<void> {
+    const url = withVaultParam(`${apiBase(config)}/tasks/list/${encodeURIComponent(listName)}`, config);
+    const body: Record<string, unknown> = { title };
+    if (completed) body.status = 'completed';
+    const res = await request(url, { method: 'POST', headers: headers(config, { 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor('add task', res);
+}
+
+/** PATCH /api/tasks/{filePath}, action "add-subtask" (`line` is the parent's line). */
+export async function addSubtask(request: ApiRequestFn, config: ApiConfig, filePath: string, lineNum: number, title: string): Promise<void> {
+    const url = withVaultParam(`${apiBase(config)}/tasks/${filePath}`, config);
+    const body = { action: 'add-subtask', line: lineNum, title };
+    const res = await request(url, { method: 'PATCH', headers: headers(config, { 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor('add subtask', res);
+}
+
+/** PATCH /api/tasks/{filePath}: "set-due", or "edit" with `due: ""` to clear it (set-due rejects an empty date). */
+export async function setDueDate(request: ApiRequestFn, config: ApiConfig, filePath: string, lineNum: number, due: string | null): Promise<void> {
+    const url = withVaultParam(`${apiBase(config)}/tasks/${filePath}`, config);
+    const body = due ? { action: 'set-due', line: lineNum, due } : { action: 'edit', line: lineNum, due: '' };
+    const res = await request(url, { method: 'PATCH', headers: headers(config, { 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor('update due date', res);
+}
+
+/**
+ * PATCH /api/tasks/{filePath}, action "edit", for one of the card's editable
+ * fields. A null/empty `value` clears it (an omitted key would leave it alone;
+ * an empty string is how "edit" removes a field).
+ */
+export async function setTaskField(request: ApiRequestFn, config: ApiConfig, filePath: string, lineNum: number, field: Exclude<EditableField, 'due'>, value: string | null): Promise<void> {
+    const url = withVaultParam(`${apiBase(config)}/tasks/${filePath}`, config);
+    const body = { action: 'edit', line: lineNum, [field]: value ?? '' };
+    const res = await request(url, { method: 'PATCH', headers: headers(config, { 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor(`update ${field}`, res);
+}
+
 /** GET /api/vaults. Deliberately never vault-scoped: a stale vault id must not 404 the very call meant to recover from it. 404 means a pre-vault-switching server, treated as "no vaults configured". */
 export async function fetchVaults(request: ApiRequestFn, config: ApiConfig): Promise<VaultInfo[]> {
     const res = await request(`${apiBase(config)}/vaults`, { method: 'GET', headers: headers(config) });
@@ -160,7 +213,7 @@ export async function fetchNote(request: ApiRequestFn, config: ApiConfig, path: 
     return { path: body.path, content: body.content };
 }
 
-/** Maps a server Task JSON object onto this plugin's local Task shape. `source`/`user`/`created`/`subtasks` have no server equivalent and are left undefined - a display-fidelity gap only, not an identity one (file_path+line_num map 1:1 either way). */
+/** Maps a server Task JSON object onto this plugin's local Task shape. `subtasks` has no server equivalent and is left undefined - a display-fidelity gap only, not an identity one (file_path+line_num map 1:1 either way). */
 export function apiTaskToTask(apiTask: ApiTask): Task {
     return {
         filePath: apiTask.file_path,
@@ -172,6 +225,9 @@ export function apiTaskToTask(apiTask: ApiTask): Task {
         priority: apiTask.priority,
         repeat: apiTask.repeat,
         tags: apiTask.tags ?? [],
-        listName: apiTask.list_name
+        listName: apiTask.list_name,
+        created: apiTask.created,
+        source: apiTask.source,
+        user: apiTask.user
     };
 }

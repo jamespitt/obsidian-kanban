@@ -307,11 +307,29 @@ export function addNoteLinkToContent(content: string, lineNum: number, noteTitle
     return lines.join('\n');
 }
 
+/** The fields a card lets you edit in place (each is a `[key::value]` on the task line). */
+export type EditableField = 'due' | 'scheduled' | 'priority' | 'repeat';
+
+export const PRIORITIES = ['high', 'medium', 'low'] as const;
+
+/** `2026-03-27T09:30` / `2026-03-27 09:30` / `2026-03-27` -> its date and time parts. */
+export function splitScheduled(value: string): { date: string; time: string } {
+    const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/.exec((value || '').trim());
+    return { date: m?.[1] ?? '', time: m?.[2] ?? '' };
+}
+
+/** The inverse: a date with an optional time, or '' when there is no date. */
+export function joinScheduled(date: string, time: string): string {
+    if (!date) return '';
+    return time ? `${date}T${time}` : date;
+}
+
 /**
- * Sets, updates, or removes the `due::YYYY-MM-DD` field in a task line.
- * Returns the modified content, preserving all other fields and spacing.
+ * Sets, updates, or removes a `[key::value]` field on a task line. A null or
+ * empty `value` removes it. Returns the modified content, preserving all other
+ * fields and spacing.
  */
-export function setDueDateInContent(content: string, lineNum: number, due: string | null): string {
+export function setFieldInContent(content: string, lineNum: number, key: EditableField, value: string | null): string {
     const lines = content.split('\n');
     const idx = lineNum - 1;
     if (idx < 0 || idx >= lines.length) return content;
@@ -324,21 +342,23 @@ export function setDueDateInContent(content: string, lineNum: number, due: strin
     const [, indent, statusChar, rawBody] = m;
     let raw = rawBody ?? '';
 
-    const dueFieldRe = /\s*\[due\s*::\s*[^\]]*\]/gi;
-    if (dueFieldRe.test(raw)) {
-        if (due) {
-            raw = raw.replace(/\[due\s*::\s*[^\]]*\]/i, `[due::${due}]`);
-        } else {
-            raw = raw.replace(/\s*\[due\s*::\s*[^\]]*\]/i, '').trim();
-        }
-    } else {
-        if (due) {
-            raw = `${raw} [due::${due}]`.trim();
-        }
+    const fieldRe = new RegExp(`\\[${key}\\s*::\\s*[^\\]]*\\]`, 'i');
+    const withLeadingSpaceRe = new RegExp(`\\s*\\[${key}\\s*::\\s*[^\\]]*\\]`, 'i');
+    if (fieldRe.test(raw)) {
+        raw = value
+            ? raw.replace(fieldRe, `[${key}::${value}]`)
+            : raw.replace(withLeadingSpaceRe, '').trim();
+    } else if (value) {
+        raw = `${raw} [${key}::${value}]`.trim();
     }
 
     lines[idx] = `${indent ?? ''}- [${statusChar}] ${raw}`;
     return lines.join('\n');
+}
+
+/** Sets, updates, or removes the `due::YYYY-MM-DD` field in a task line. */
+export function setDueDateInContent(content: string, lineNum: number, due: string | null): string {
+    return setFieldInContent(content, lineNum, 'due', due);
 }
 
 /**

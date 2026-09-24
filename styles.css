@@ -249,6 +249,35 @@
     color: var(--text-accent);
 }
 
+/* Secondary detail row: created / scheduled / repeat */
+.kanban-card-meta--secondary {
+    margin-top: 3px;
+    color: var(--text-faint);
+}
+
+/* Click-to-edit field badges (scheduled, repeat, priority) */
+.kanban-card-field-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+    box-shadow: none;
+}
+
+.kanban-card-field-btn:hover {
+    color: var(--text-accent);
+}
+
+.kanban-card-field-btn svg {
+    width: 12px;
+    height: 12px;
+}
+
 /* Created Date Metadata */
 .kanban-card-created {
     display: inline-flex;

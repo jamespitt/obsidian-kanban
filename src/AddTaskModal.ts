@@ -1,18 +1,24 @@
-import { App, Modal, Setting, TFile, Notice } from 'obsidian';
+import { App, Modal, Setting, Notice } from 'obsidian';
+
+/** A place a new task can go: a vault file path (local mode) or a server list name (API mode). */
+export interface AddTaskTarget {
+    value: string;
+    label: string;
+}
 
 export class AddTaskModal extends Modal {
     taskTitle: string = '';
-    selectedFilePath: string = '';
-    scannedFiles: TFile[] = [];
-    onSubmit: (title: string, filePath: string) => void | Promise<void>;
+    selectedTarget: string = '';
+    targets: AddTaskTarget[] = [];
+    onSubmit: (title: string, target: string) => void | Promise<void>;
 
     constructor(
         app: App,
-        scannedFiles: TFile[],
-        onSubmit: (title: string, filePath: string) => void | Promise<void>
+        targets: AddTaskTarget[],
+        onSubmit: (title: string, target: string) => void | Promise<void>
     ) {
         super(app);
-        this.scannedFiles = scannedFiles;
+        this.targets = targets;
         this.onSubmit = onSubmit;
     }
 
@@ -38,16 +44,16 @@ export class AddTaskModal extends Modal {
             .setDesc('Select the note to add this task to.');
 
         fileSetting.addDropdown(dropdown => {
-            for (const file of this.scannedFiles) {
-                dropdown.addOption(file.path, file.basename);
+            for (const target of this.targets) {
+                dropdown.addOption(target.value, target.label);
             }
-            if (this.scannedFiles.length > 0 && this.scannedFiles[0]) {
-                const defaultPath = this.scannedFiles[0].path;
-                dropdown.setValue(defaultPath);
-                this.selectedFilePath = defaultPath;
+            if (this.targets.length > 0 && this.targets[0]) {
+                const defaultTarget = this.targets[0].value;
+                dropdown.setValue(defaultTarget);
+                this.selectedTarget = defaultTarget;
             }
             dropdown.onChange(value => {
-                this.selectedFilePath = value;
+                this.selectedTarget = value;
             });
         });
 
@@ -60,12 +66,12 @@ export class AddTaskModal extends Modal {
                         new Notice('Please enter a task title.');
                         return;
                     }
-                    if (!this.selectedFilePath) {
+                    if (!this.selectedTarget) {
                         new Notice('No target note selected.');
                         return;
                     }
                     this.close();
-                    void this.onSubmit(this.taskTitle, this.selectedFilePath);
+                    void this.onSubmit(this.taskTitle, this.selectedTarget);
                 }))
             .addButton(btn => btn
                 .setButtonText('Cancel')

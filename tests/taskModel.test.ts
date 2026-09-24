@@ -15,6 +15,9 @@ import {
     addNoteLinkToContent,
     extractWikilink,
     setDueDateInContent,
+    setFieldInContent,
+    splitScheduled,
+    joinScheduled,
     addSubtaskInContent
 } from '../src/taskModel';
 
@@ -177,6 +180,35 @@ function run() {
     const dueAddedWithTime = setDueDateInContent(dueTestFile, 2, '2026-09-18 14:30');
     assertEqual(dueAddedWithTime.split('\n')[1], '- [ ] Plain task [due::2026-09-18 14:30]',
         'setDueDateInContent adds a due date and time if none existed');
+
+    // --- setFieldInContent (scheduled / priority / repeat) ---
+    const fieldFile = '- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [priority::high] [google_id::abc]\n- [x] Plain\n';
+    assertEqual(setFieldInContent(fieldFile, 1, 'scheduled', '2026-09-05T10:00').split('\n')[0],
+        '- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-05T10:00] [priority::high] [google_id::abc]',
+        'setFieldInContent replaces scheduled in place, leaving every other field alone');
+    assertEqual(setFieldInContent(fieldFile, 1, 'priority', null).split('\n')[0],
+        '- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [google_id::abc]',
+        'setFieldInContent removes priority when cleared');
+    assertEqual(setFieldInContent(fieldFile, 2, 'repeat', 'every week').split('\n')[1], '- [x] Plain [repeat::every week]',
+        'setFieldInContent adds a missing repeat and keeps the checkbox state');
+    assertEqual(setFieldInContent(fieldFile, 1, 'repeat', ''), fieldFile, 'setFieldInContent with an empty value on a missing field is a no-op');
+    assertEqual(setFieldInContent('- [ ] Odd [Priority :: low]', 1, 'priority', 'high'), '- [ ] Odd [priority::high]',
+        'setFieldInContent matches the key case-insensitively and with spaces around ::');
+    assertEqual(setFieldInContent(fieldFile, 99, 'repeat', 'x'), fieldFile, 'setFieldInContent ignores an out-of-range line');
+    assertEqual(setFieldInContent('not a task', 1, 'repeat', 'x'), 'not a task', 'setFieldInContent ignores a non-task line');
+
+    assertEqual(splitScheduled('2026-03-27T09:30'), { date: '2026-03-27', time: '09:30' }, 'splitScheduled splits date and time (T)');
+    assertEqual(splitScheduled('2026-03-27 09:30'), { date: '2026-03-27', time: '09:30' }, 'splitScheduled splits date and time (space)');
+    assertEqual(splitScheduled('2026-03-27'), { date: '2026-03-27', time: '' }, 'splitScheduled handles a bare date');
+    assertEqual(splitScheduled(''), { date: '', time: '' }, 'splitScheduled handles empty');
+    assertEqual(joinScheduled('2026-03-27', '09:30'), '2026-03-27T09:30', 'joinScheduled joins with T');
+    assertEqual(joinScheduled('2026-03-27', ''), '2026-03-27', 'joinScheduled omits an empty time');
+    assertEqual(joinScheduled('', '09:30'), '', 'joinScheduled is empty without a date (a time alone is meaningless)');
+
+    // --- parseTaskLine still reads scheduled/repeat/created/source/user locally ---
+    const detail = parseTaskLine('- [ ] Ping #ToDo [created::2026-09-22] [scheduled::2026-09-23T10:00] [repeat::every week] [source:: wiki/a.md] [user:: A, B]', 'L.md', 1);
+    assertEqual([detail?.created, detail?.scheduled, detail?.repeat, detail?.source, detail?.user],
+        ['2026-09-22', '2026-09-23T10:00', 'every week', 'wiki/a.md', 'A, B'], 'parseTaskLine exposes the card detail fields');
 
     // --- addSubtaskInContent ---
     const subtaskTestFile = '- [ ] Buy bread #groceries [due::2026-09-01]\n- [ ] Plain task\n';
