@@ -59,6 +59,12 @@ export interface ApiTask {
     created?: string;
     source?: string;
     user?: string;
+    level?: number;
+    /** "file_path:line_num" of the parent, when the task is nested. */
+    parent_id?: string;
+    type?: 'task' | 'event';
+    /** Only on /tasks/kanban cards: every descendant, in file order (level relative to the card). */
+    subtasks?: { line_num: number; title: string; status: 'todo' | 'completed'; level: number }[];
 }
 
 export interface VaultInfo {
@@ -143,6 +149,37 @@ export async function renameTask(request: ApiRequestFn, config: ApiConfig, fileP
     if (res.status < 200 || res.status >= 300) throw await errorFor('rename task', res);
 }
 
+/** GET /api/tasks: every open task the server can see (calendar events excluded) - the candidate parents for "make subtask of". */
+export async function fetchAllTasks(request: ApiRequestFn, config: ApiConfig): Promise<ApiTask[]> {
+    const url = withVaultParam(`${apiBase(config)}/tasks`, config);
+    const res = await request(url, { method: 'GET', headers: headers(config) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor('load tasks', res);
+    const body = res.json as { tasks?: ApiTask[] } | null;
+    return (body?.tasks ?? []).filter((t) => t.type !== 'event' && t.status !== 'completed');
+}
+
+/**
+ * PATCH /api/tasks/{filePath}, action "set-parent": makes the task a subtask of
+ * `parent` (its file is only sent when it differs from the task's - the task
+ * then moves into the parent's file), or top level when `parent` is null.
+ * Returns the task's new location; line numbers shift, so refetch afterwards.
+ */
+export async function setParent(
+    request: ApiRequestFn,
+    config: ApiConfig,
+    filePath: string,
+    lineNum: number,
+    parent: { filePath: string; lineNum: number } | null
+): Promise<{ path: string; line: number }> {
+    const url = withVaultParam(`${apiBase(config)}/tasks/${filePath}`, config);
+    const body: Record<string, unknown> = { action: 'set-parent', line: lineNum, parent_line: parent ? parent.lineNum : 0 };
+    if (parent && parent.filePath !== filePath) body.parent_path = parent.filePath;
+    const res = await request(url, { method: 'PATCH', headers: headers(config, { 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (res.status < 200 || res.status >= 300) throw await errorFor('change parent', res);
+    const out = res.json as { path?: string; line?: number } | null;
+    return { path: out?.path ?? filePath, line: out?.line ?? lineNum };
+}
+
 /** GET /api/tasks/lists: the list (file stem) names the server can add tasks to. */
 export async function fetchLists(request: ApiRequestFn, config: ApiConfig): Promise<string[]> {
     const url = withVaultParam(`${apiBase(config)}/tasks/lists`, config);
@@ -213,6 +250,13 @@ export async function fetchNote(request: ApiRequestFn, config: ApiConfig, path: 
     return { path: body.path, content: body.content };
 }
 
+/** "Tasks/Work.md:12" -> 12: the parent's line in the same file (parent_id is always same-file). */
+function parentLineOf(parentId: string | undefined): number | undefined {
+    if (!parentId) return undefined;
+    const n = Number(parentId.slice(parentId.lastIndexOf(':') + 1));
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 /** Maps a server Task JSON object onto this plugin's local Task shape. `subtasks` has no server equivalent and is left undefined - a display-fidelity gap only, not an identity one (file_path+line_num map 1:1 either way). */
 export function apiTaskToTask(apiTask: ApiTask): Task {
     return {
@@ -228,6 +272,9 @@ export function apiTaskToTask(apiTask: ApiTask): Task {
         listName: apiTask.list_name,
         created: apiTask.created,
         source: apiTask.source,
-        user: apiTask.user
+        user: apiTask.user,
+        level: apiTask.level,
+        parentLine: parentLineOf(apiTask.parent_id),
+        subtasks: apiTask.subtasks?.map((s) => ({ title: s.title, checked: s.status === 'completed', level: s.level, lineNum: s.line_num }))
     };
 }

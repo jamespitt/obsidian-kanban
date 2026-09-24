@@ -21,7 +21,20 @@ export interface Task {
     source?: string;
     user?: string;
     created?: string;
-    subtasks?: { title: string; checked: boolean }[];
+    /** Descendants, in file order. `level` is relative to the card (1 = direct child). */
+    subtasks?: Subtask[];
+    /** Indent depth (0 = top level). Set by the local scan and by the server. */
+    level?: number;
+    /** Local scan only: line number of the nearest ancestor task in the same file. */
+    parentLine?: number;
+}
+
+export interface Subtask {
+    title: string;
+    checked: boolean;
+    level?: number;
+    /** Line in the card's file, so a subtask can be acted on (e.g. made top level). */
+    lineNum?: number;
 }
 
 // The mutually-exclusive tags used when a board doesn't specify its
@@ -104,6 +117,56 @@ export function kanbanStatus(task: Task, columns: readonly string[] = KANBAN_STA
 /** Tasks carrying one of `columns`' tags, regardless of completion status. */
 export function filterKanban(tasks: Task[], columns: readonly string[] = KANBAN_STATUSES): Task[] {
     return tasks.filter((t) => kanbanStatus(t, columns) !== null);
+}
+
+/**
+ * Turns the flat task list into board cards, folding subtasks into their
+ * parent - the same rule as the server's KanbanCardsIn (pkg/tasks/subtasks.go):
+ * a task with an on-board ancestor isn't a card, it is one of the topmost
+ * on-board ancestor's `subtasks`; a task whose ancestors are all off the board
+ * stays a card. Tasks without `parentLine` (e.g. cards the server already
+ * folded) pass through untouched.
+ */
+export function foldSubtasks(tasks: Task[], columns: readonly string[] = KANBAN_STATUSES): Task[] {
+    const key = (t: { filePath: string; lineNum: number }) => `${t.filePath}:${t.lineNum}`;
+    const byKey = new Map(tasks.map((t) => [key(t), t] as const));
+    const onBoard = (t: Task) => kanbanStatus(t, columns) !== null;
+
+    const ownerOf = (t: Task): Task | null => {
+        let owner: Task | null = null;
+        const seen = new Set<string>([key(t)]);
+        let parentLine = t.parentLine;
+        while (parentLine !== undefined) {
+            const pk = `${t.filePath}:${parentLine}`;
+            const parent = byKey.get(pk);
+            if (!parent || seen.has(pk)) break;
+            seen.add(pk);
+            if (onBoard(parent)) owner = parent;
+            parentLine = parent.parentLine;
+        }
+        return owner;
+    };
+
+    const subs = new Map<string, Subtask[]>();
+    const cards: Task[] = [];
+    for (const t of tasks) {
+        const owner = ownerOf(t);
+        if (owner) {
+            const list = subs.get(key(owner)) ?? [];
+            list.push({ title: t.title, checked: t.status === 'completed', level: (t.level ?? 0) - (owner.level ?? 0), lineNum: t.lineNum });
+            subs.set(key(owner), list);
+        } else if (onBoard(t)) {
+            cards.push(t);
+        }
+    }
+    return cards.map((c) => (subs.has(key(c)) ? { ...c, subtasks: subs.get(key(c)) } : c));
+}
+
+/** Done/total over a card's subtasks, or null when it has none. */
+export function subtaskProgress(task: Task): { done: number; total: number } | null {
+    const subs = task.subtasks ?? [];
+    if (subs.length === 0) return null;
+    return { done: subs.filter((s) => s.checked).length, total: subs.length };
 }
 
 /** True if two column lists are the same set, in the same order, case-insensitively. */
@@ -381,4 +444,98 @@ export function addSubtaskInContent(content: string, lineNum: number, subtaskTit
 
     lines.splice(lineNum, 0, subtaskLine);
     return lines.join('\n');
+}
+
+// --- Re-parenting (make a task a subtask of another / top level) ---------
+//
+// The plugin-side twin of tasks.SetParent in notesmd-cli (pkg/tasks/subtasks.go):
+// used in local mode, where there is no server to do it.
+
+const BLOCK_TASK_RE = /^(\s*)-\s*\[([xX ])\]\s+(.*)$/;
+
+function indentOf(line: string | undefined): number | null {
+    if (line === undefined) return null;
+    const m = BLOCK_TASK_RE.exec(line);
+    return m ? (m[1] ?? '').length : null;
+}
+
+/** Index one past the task at `idx` and its descendants (contiguous deeper task lines). */
+export function blockEnd(lines: string[], idx: number): number {
+    const indent = indentOf(lines[idx]) ?? 0;
+    let end = idx + 1;
+    while (end < lines.length) {
+        const i = indentOf(lines[end]);
+        if (i === null || i <= indent) break;
+        end++;
+    }
+    return end;
+}
+
+function reindent(line: string, delta: number): string {
+    if (delta >= 0) return ' '.repeat(delta) + line;
+    return line.replace(new RegExp(`^[ \\t]{0,${-delta}}`), '');
+}
+
+/** Removes the task at `lineNum` (1-based) with its subtasks. Null if that line isn't a task. */
+export function extractBlock(content: string, lineNum: number): { block: string[]; rest: string; indent: number } | null {
+    const lines = content.split('\n');
+    const idx = lineNum - 1;
+    const indent = indentOf(lines[idx]);
+    if (indent === null) return null;
+    const end = blockEnd(lines, idx);
+    return { block: lines.slice(idx, end), rest: [...lines.slice(0, idx), ...lines.slice(end)].join('\n'), indent };
+}
+
+/**
+ * Inserts `block` (whose top line is indented `blockIndent`) as the last
+ * subtask of the task at `parentLine` (1-based) in `content`. Returns the new
+ * content and the block's new 1-based line, or null if `parentLine` isn't a task.
+ */
+export function insertBlockUnder(content: string, parentLine: number, block: string[], blockIndent: number): { content: string; newLine: number } | null {
+    const lines = content.split('\n');
+    const pIdx = parentLine - 1;
+    const pIndent = indentOf(lines[pIdx]);
+    if (pIndent === null) return null;
+    const insertAt = blockEnd(lines, pIdx);
+    const delta = pIndent + 4 - blockIndent;
+    const moved = block.map((l) => reindent(l, delta));
+    return { content: [...lines.slice(0, insertAt), ...moved, ...lines.slice(insertAt)].join('\n'), newLine: insertAt + 1 };
+}
+
+/** Same-file re-parent: the task (and its subtasks) becomes the last subtask of `parentLine`. Null when impossible (a cycle, or a non-task line). */
+export function setParentInContent(content: string, lineNum: number, parentLine: number): { content: string; newLine: number } | null {
+    const lines = content.split('\n');
+    const idx = lineNum - 1;
+    if (indentOf(lines[idx]) === null) return null;
+    const end = blockEnd(lines, idx);
+    if (parentLine - 1 >= idx && parentLine - 1 < end) return null; // itself or one of its own subtasks
+    const taken = extractBlock(content, lineNum);
+    if (!taken) return null;
+    const adjusted = parentLine - 1 >= end ? parentLine - (end - idx) : parentLine;
+    return insertBlockUnder(taken.rest, adjusted, taken.block, taken.indent);
+}
+
+/** Promotes the task to top level, placed after its top-level ancestor's subtree. Null if the line isn't a task. */
+export function promoteInContent(content: string, lineNum: number): { content: string; newLine: number } | null {
+    const lines = content.split('\n');
+    const idx = lineNum - 1;
+    const indent = indentOf(lines[idx]);
+    if (indent === null) return null;
+    if (indent === 0) return { content, newLine: lineNum };
+
+    let root = idx;
+    let rootIndent = indent;
+    for (let i = idx - 1; i >= 0 && rootIndent > 0; i--) {
+        const ii = indentOf(lines[i]);
+        if (ii === null) break;
+        if (ii < rootIndent) { root = i; rootIndent = ii; }
+    }
+    if (rootIndent !== 0) return null;
+
+    const taken = extractBlock(content, lineNum);
+    if (!taken) return null;
+    const rest = taken.rest.split('\n');
+    const insertAt = blockEnd(rest, root);
+    const moved = taken.block.map((l) => reindent(l, -indent));
+    return { content: [...rest.slice(0, insertAt), ...moved, ...rest.slice(insertAt)].join('\n'), newLine: insertAt + 1 };
 }

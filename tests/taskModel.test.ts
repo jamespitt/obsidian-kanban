@@ -16,6 +16,12 @@ import {
     extractWikilink,
     setDueDateInContent,
     setFieldInContent,
+    foldSubtasks,
+    subtaskProgress,
+    setParentInContent,
+    promoteInContent,
+    extractBlock,
+    insertBlockUnder,
     splitScheduled,
     joinScheduled,
     addSubtaskInContent
@@ -209,6 +215,70 @@ function run() {
     const detail = parseTaskLine('- [ ] Ping #ToDo [created::2026-09-22] [scheduled::2026-09-23T10:00] [repeat::every week] [source:: wiki/a.md] [user:: A, B]', 'L.md', 1);
     assertEqual([detail?.created, detail?.scheduled, detail?.repeat, detail?.source, detail?.user],
         ['2026-09-22', '2026-09-23T10:00', 'every week', 'wiki/a.md', 'A, B'], 'parseTaskLine exposes the card detail fields');
+
+    // --- re-parenting (mirrors the Go tests in pkg/tasks/subtasks_test.go) ---
+    const tree = '# L\n- [ ] A #ToDo\n    - [ ] A1\n        - [ ] A1a\n    - [ ] A2\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n';
+
+    const r1 = setParentInContent(tree, 7, 2);
+    assertEqual(r1?.content, '# L\n- [ ] A #ToDo\n    - [ ] A1\n        - [ ] A1a\n    - [ ] A2\n    - [ ] C\n- [ ] B #ToDo\n- [ ] D\n    - [ ] D1\n',
+        'setParentInContent puts C after the last descendant of A, one level deeper');
+    assertEqual(r1?.newLine, 6, 'setParentInContent reports the new line');
+
+    const r2 = setParentInContent(tree, 6, 9);
+    assertEqual(r2?.content?.includes('- [ ] D\n    - [ ] D1\n        - [ ] B #ToDo\n'), true, 'setParentInContent nests two levels deep when the parent is after the source');
+    assertEqual(r2?.newLine, 9, 'setParentInContent reports the line after removing an earlier block');
+
+    const r3 = setParentInContent(tree, 2, 8);
+    assertEqual(r3?.content, '# L\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n    - [ ] A #ToDo\n        - [ ] A1\n            - [ ] A1a\n        - [ ] A2\n',
+        'setParentInContent moves the whole subtree, shifting every level');
+
+    for (const parent of [2, 3, 4, 5]) {
+        assertEqual(setParentInContent(tree, 2, parent), null, `setParentInContent rejects a cycle (parent line ${parent})`);
+    }
+    assertEqual(setParentInContent(tree, 1, 2), null, 'setParentInContent rejects a non-task source');
+    assertEqual(setParentInContent(tree, 7, 1), null, 'setParentInContent rejects a non-task parent');
+
+    const pr = promoteInContent(tree, 3);
+    assertEqual(pr?.content, '# L\n- [ ] A #ToDo\n    - [ ] A2\n- [ ] A1\n    - [ ] A1a\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n',
+        'promoteInContent makes A1 top level after A\'s subtree, bringing A1a along');
+    assertEqual(pr?.newLine, 4, 'promoteInContent reports the new line');
+    assertEqual(promoteInContent(tree, 6)?.content, tree, 'promoteInContent leaves a top-level task alone');
+    assertEqual(setParentInContent('# L\n- [ ] A\n- [ ] B', 3, 2)?.content, '# L\n- [ ] A\n    - [ ] B', 'setParentInContent keeps a missing trailing newline missing');
+
+    // cross-file: extract from one file, insert into another
+    const taken = extractBlock('# L\n- [ ] X #ToDo\n    - [ ] X1\n- [ ] Y\n', 2);
+    assertEqual(taken?.rest, '# L\n- [ ] Y\n', 'extractBlock removes the task and its subtasks');
+    const placed = insertBlockUnder('# M\n- [ ] P\n- [ ] Q\n', 2, taken?.block ?? [], taken?.indent ?? 0);
+    assertEqual(placed?.content, '# M\n- [ ] P\n    - [ ] X #ToDo\n        - [ ] X1\n- [ ] Q\n', 'insertBlockUnder nests the block under the parent in the other file');
+    assertEqual(placed?.newLine, 3, 'insertBlockUnder reports the new line');
+
+    // --- foldSubtasks (mirrors KanbanCardsIn) ---
+    const mk = (line: number, title: string, level: number, parentLine: number | undefined, tags: string[], status: 'todo' | 'completed' = 'todo') =>
+        ({ filePath: 'L.md', lineNum: line, title, status, tags, listName: 'L', level, parentLine });
+    const flat = [
+        mk(2, 'A', 0, undefined, ['ToDo']),
+        mk(3, 'A1', 1, 2, [], 'completed'),
+        mk(4, 'A1a', 2, 3, []),
+        mk(5, 'A2', 1, 2, ['Tracking']),
+        mk(6, 'B', 0, undefined, ['ToDo'])
+    ];
+    const cards = foldSubtasks(flat);
+    assertEqual(cards.map((c) => c.title), ['A', 'B'], 'foldSubtasks: only on-board tasks without an on-board ancestor are cards');
+    assertEqual(cards[0]?.subtasks?.map((x) => [x.title, x.level, x.checked]), [['A1', 1, true], ['A1a', 2, false], ['A2', 1, false]],
+        'foldSubtasks lists every descendant with its relative level and done state');
+    assertEqual(subtaskProgress(cards[0] as never), { done: 1, total: 3 }, 'subtaskProgress counts done over all descendants');
+    assertEqual(subtaskProgress(cards[1] as never), null, 'subtaskProgress is null with no subtasks');
+
+    const offBoardParent = foldSubtasks([mk(2, 'Epic', 0, undefined, []), mk(3, 'Child', 1, 2, ['ToDo']), mk(4, 'Grand', 2, 3, [])]);
+    assertEqual(offBoardParent.map((c) => c.title), ['Child'], 'foldSubtasks keeps a tagged subtask as a card when its parent is off the board');
+    assertEqual(offBoardParent[0]?.subtasks?.map((x) => [x.title, x.level]), [['Grand', 1]], 'foldSubtasks makes Grand a subtask of Child, level 1');
+
+    const topmost = foldSubtasks([mk(2, 'Top', 0, undefined, ['ToDo']), mk(3, 'Mid', 1, 2, ['InProgress']), mk(4, 'Leaf', 2, 3, [])]);
+    assertEqual(topmost.map((c) => c.title), ['Top'], 'foldSubtasks: the topmost on-board ancestor owns everything below');
+    assertEqual(topmost[0]?.subtasks?.length, 2, 'foldSubtasks: Top owns Mid and Leaf');
+
+    const serverFolded = [{ filePath: 'L.md', lineNum: 2, title: 'A', status: 'todo' as const, tags: ['ToDo'], listName: 'L', subtasks: [{ title: 'x', checked: false, level: 1 }] }];
+    assertEqual(foldSubtasks(serverFolded)[0]?.subtasks?.length, 1, 'foldSubtasks passes cards the server already folded straight through');
 
     // --- addSubtaskInContent ---
     const subtaskTestFile = '- [ ] Buy bread #groceries [due::2026-09-01]\n- [ ] Plain task\n';

@@ -364,3 +364,10 @@
     max-height: 60vh;
     overflow: auto;
 }
+
+/* Subtask checklist header: "Subtasks 2/4" */
+.kanban-card-subtasks-progress {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+    margin-bottom: 2px;
+}

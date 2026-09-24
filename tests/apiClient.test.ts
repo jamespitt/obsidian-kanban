@@ -6,6 +6,8 @@ import {
     SERVER_DEFAULT_COLUMNS,
     addSubtask,
     addTask,
+    fetchAllTasks,
+    setParent,
     apiTaskToTask,
     buildAuthHeader,
     fetchKanbanTasks,
@@ -204,6 +206,45 @@ async function run() {
     {
         const { request } = fakeRequest([jsonResponse(400, { error: 'bad repeat' })]);
         await assertThrows(() => setTaskField(request, config, 'Work.md', 3, 'repeat', 'x'), 'bad repeat', 'setTaskField surfaces a server error');
+    }
+
+    // --- setParent / fetchAllTasks / subtasks mapping ---
+
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, { path: 'Tasks/Work.md', line: 6 })]);
+        const at = await setParent(request, configWithVault, 'Tasks/Work.md', 9, { filePath: 'Tasks/Work.md', lineNum: 2 });
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'set-parent', line: 9, parent_line: 2 },
+            'setParent omits parent_path when the parent is in the same file');
+        assertEqual(calls[0]?.url, 'https://tasks.example.com/api/tasks/Tasks/Work.md?vault=work', 'setParent is vault-scoped');
+        assertEqual(at, { path: 'Tasks/Work.md', line: 6 }, 'setParent returns the new location');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, { path: 'Tasks/Home.md', line: 3 })]);
+        const at = await setParent(request, config, 'Tasks/Work.md', 9, { filePath: 'Tasks/Home.md', lineNum: 2 });
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'set-parent', line: 9, parent_line: 2, parent_path: 'Tasks/Home.md' },
+            'setParent sends parent_path when the parent is in another file');
+        assertEqual(at.path, 'Tasks/Home.md', 'setParent reports the task moved into the parent file');
+    }
+    {
+        const { request, calls } = fakeRequest([jsonResponse(200, {})]);
+        await setParent(request, config, 'Work.md', 4, null);
+        assertEqual(JSON.parse(calls[0]?.init.body ?? '{}'), { action: 'set-parent', line: 4, parent_line: 0 }, 'setParent(null) promotes with parent_line 0');
+    }
+    {
+        const { request } = fakeRequest([jsonResponse(400, { error: 'cannot set parent: a task cannot become a subtask of itself' })]);
+        await assertThrows(() => setParent(request, config, 'Work.md', 2, { filePath: 'Work.md', lineNum: 2 }), 'cannot set parent', 'setParent surfaces the server refusal');
+    }
+    {
+        const mk = (line: number, type: 'task' | 'event', status: 'todo' | 'completed') =>
+            ({ file_path: 'W.md', line_num: line, title: 't' + line, status, type, tags: [], list_name: 'W' });
+        const { request } = fakeRequest([jsonResponse(200, { tasks: [mk(1, 'task', 'todo'), mk(2, 'event', 'todo'), mk(3, 'task', 'completed')] })]);
+        assertEqual((await fetchAllTasks(request, config)).map((t) => t.line_num), [1], 'fetchAllTasks drops calendar events and completed tasks');
+    }
+    {
+        const t = apiTaskToTask({ file_path: 'W.md', line_num: 2, title: 'Epic', status: 'todo', tags: ['InProgress'], list_name: 'W', level: 0,
+            subtasks: [{ line_num: 3, title: 'c1', status: 'completed', level: 1 }, { line_num: 4, title: 'c2', status: 'todo', level: 1 }] });
+        assertEqual(t.subtasks, [{ title: 'c1', checked: true, level: 1, lineNum: 3 }, { title: 'c2', checked: false, level: 1, lineNum: 4 }],
+            'apiTaskToTask maps the server subtasks (status -> checked)');
     }
 
     // --- renameTask ---

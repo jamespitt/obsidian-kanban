@@ -7,7 +7,6 @@ import {
     KANBAN_STATUSES,
     parseTaskLine,
     kanbanStatus,
-    filterKanban,
     matchesFilter,
     setStatusTagInContent,
     applyKanbanStatus,
@@ -21,13 +20,20 @@ import {
     extractWikilink,
     setDueDateInContent,
     setFieldInContent,
-    addSubtaskInContent
+    addSubtaskInContent,
+    foldSubtasks,
+    subtaskProgress,
+    setParentInContent,
+    promoteInContent,
+    extractBlock,
+    insertBlockUnder
 } from './taskModel';
 import { DueDatePickerModal } from './DueDatePickerModal';
 import { AddTaskModal, AddTaskTarget } from './AddTaskModal';
 import { AddSubtaskModal } from './AddSubtaskModal';
 import { FieldEditModal } from './FieldEditModal';
-import { ApiConfig, addSubtask, addTask, apiTaskToTask, fetchKanbanTasks, fetchLists, fetchNote, renameTask, setDueDate, setKanbanStatus, setTaskField } from './apiClient';
+import { ParentPickerModal } from './ParentPickerModal';
+import { ApiConfig, addSubtask, addTask, apiTaskToTask, fetchAllTasks, fetchKanbanTasks, fetchLists, fetchNote, renameTask, setDueDate, setKanbanStatus, setParent, setTaskField } from './apiClient';
 import { obsidianRequest } from './obsidianRequest';
 import { RemoteNoteModal } from './RemoteNoteModal';
 
@@ -169,44 +175,28 @@ export class KanbanView extends TextFileView {
         }
     }
 
+    /**
+     * Every task line in `files`, with its indent depth and its nearest
+     * ancestor's line (`parentLine`). Subtasks are folded into their parent at
+     * render time (see foldSubtasks), the same rule the server applies.
+     */
     private async scanTasksLocal(files: TFile[]): Promise<Task[]> {
         const tasks: Task[] = [];
         for (const file of files) {
             const content = await this.app.vault.cachedRead(file);
             const lines = content.split('\n');
+            const ancestors: { indent: number; lineNum: number }[] = [];
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
                 if (line === undefined) continue;
                 const task = parseTaskLine(line, file.path, i + 1);
-                if (task) {
-                    const parentIndent = line.match(/^(\s*)/)?.[1]?.length ?? 0;
-                    const subtasks: { title: string; checked: boolean }[] = [];
-                    
-                    let j = i + 1;
-                    while (j < lines.length) {
-                        const nextLine = lines[j];
-                        if (nextLine === undefined) break;
-                        
-                        const nextIndentMatch = nextLine.match(/^(\s*)/);
-                        const nextIndent = nextIndentMatch?.[1]?.length ?? 0;
-                        
-                        if (nextLine.trim() !== '') {
-                            if (nextIndent <= parentIndent) {
-                                break;
-                            }
-                            
-                            const subMatch = /^(\s*)-\s*\[([xX ])\]\s+(.*)$/.exec(nextLine);
-                            if (subMatch) {
-                                const checked = subMatch[2]?.toLowerCase() === 'x';
-                                const title = subMatch[3]?.trim() ?? '';
-                                subtasks.push({ title, checked });
-                            }
-                        }
-                        j++;
-                    }
-                    task.subtasks = subtasks;
-                    tasks.push(task);
-                }
+                if (!task) continue;
+                const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0;
+                while (ancestors.length > 0 && (ancestors[ancestors.length - 1]?.indent ?? 0) >= indent) ancestors.pop();
+                task.level = ancestors.length;
+                task.parentLine = ancestors[ancestors.length - 1]?.lineNum;
+                ancestors.push({ indent, lineNum: i + 1 });
+                tasks.push(task);
             }
         }
         return tasks;
@@ -233,7 +223,7 @@ export class KanbanView extends TextFileView {
         container.empty();
         container.addClass('kanban-board-container');
 
-        const board = filterKanban(this.tasks, this.columns).filter((t) => matchesFilter(t, this.filterTags));
+        const board = foldSubtasks(this.tasks, this.columns).filter((t) => matchesFilter(t, this.filterTags));
         const columns: Record<string, Task[]> = {};
         for (const c of this.columns) columns[c] = [];
         for (const task of board) {
@@ -372,6 +362,18 @@ export class KanbanView extends TextFileView {
                 });
             }
             menu.addItem((item) => {
+                item.setTitle('Make subtask of...')
+                    .setIcon('corner-down-right')
+                    .onClick(() => { void this.openParentPicker(task); });
+            });
+            if ((task.level ?? 0) > 0) {
+                menu.addItem((item) => {
+                    item.setTitle('Make top level')
+                        .setIcon('arrow-up-left')
+                        .onClick(() => { void this.setTaskParent(task, null); });
+                });
+            }
+            menu.addItem((item) => {
                 item.setTitle('Add subtask')
                     .setIcon('plus')
                     .onClick(() => {
@@ -388,14 +390,31 @@ export class KanbanView extends TextFileView {
 
         cardEl.createDiv({ cls: 'kanban-card-title', text: task.title });
 
-        if (task.subtasks && task.subtasks.length > 0) {
+        const progress = subtaskProgress(task);
+        if (progress && task.subtasks) {
             const subtasksEl = cardEl.createDiv({ cls: 'kanban-card-subtasks' });
+            subtasksEl.createDiv({ cls: 'kanban-card-subtasks-progress', text: `Subtasks ${progress.done}/${progress.total}` });
             for (const sub of task.subtasks) {
                 const subEl = subtasksEl.createDiv({ cls: 'kanban-card-subtask' });
+                subEl.style.paddingLeft = `${Math.max(0, (sub.level ?? 1) - 1) * 12}px`;
                 const checkIcon = sub.checked ? '☑' : '☐';
                 const subText = subEl.createSpan({ text: `${checkIcon} ${sub.title}` });
                 if (sub.checked) {
                     subText.addClass('kanban-card-subtask--completed');
+                }
+                if (sub.lineNum !== undefined) {
+                    const subLine = sub.lineNum;
+                    subEl.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const subMenu = new Menu();
+                        subMenu.addItem((item) => {
+                            item.setTitle('Make top level')
+                                .setIcon('arrow-up-left')
+                                .onClick(() => { void this.setTaskParent({ filePath: task.filePath, lineNum: subLine }, null); });
+                        });
+                        subMenu.showAtMouseEvent(e);
+                    });
                 }
             }
         }
@@ -593,6 +612,99 @@ export class KanbanView extends TextFileView {
             new Notice(`Failed to update due date: ${e instanceof Error ? e.message : String(e)}`);
         }
         await this.refreshTasks();
+    }
+
+    /** Lets you pick which task `task` should become a subtask of. */
+    private async openParentPicker(task: Task): Promise<void> {
+        let all: Task[];
+        if (this.apiMode()) {
+            try {
+                all = (await fetchAllTasks(obsidianRequest, this.apiConfig())).map(apiTaskToTask);
+            } catch (e) {
+                new Notice(`Could not load tasks from the server: ${e instanceof Error ? e.message : String(e)}`);
+                return;
+            }
+        } else {
+            all = this.tasks;
+        }
+
+        // A task can't go under itself or one of its own subtasks.
+        const byKey = new Map<string, Task>(all.map((t) => [`${t.filePath}:${t.lineNum}`, t]));
+        const isInside = (candidate: Task): boolean => {
+            const seen = new Set<string>();
+            let line = candidate.parentLine;
+            while (line !== undefined) {
+                const k = `${candidate.filePath}:${line}`;
+                if (seen.has(k)) return false;
+                seen.add(k);
+                if (candidate.filePath === task.filePath && line === task.lineNum) return true;
+                line = byKey.get(k)?.parentLine;
+            }
+            return false;
+        };
+        const candidates = all.filter((t) =>
+            t.status !== 'completed'
+            && !(t.filePath === task.filePath && t.lineNum === task.lineNum)
+            && !isInside(t)
+            && t.parentLine !== task.lineNum // (covered by isInside; kept cheap for the common direct-child case)
+        );
+        if (candidates.length === 0) {
+            new Notice('There are no other tasks to nest this under.');
+            return;
+        }
+        new ParentPickerModal(this.app, candidates, (parent) => {
+            void this.setTaskParent(task, parent);
+        }).open();
+    }
+
+    /**
+     * Makes `task` a subtask of `parent`, or top level when `parent` is null.
+     * A subtask lives in its parent's file, so a parent in another file moves
+     * the task there. In API mode the server does it; locally it's done to the
+     * vault files directly.
+     */
+    private async setTaskParent(task: { filePath: string; lineNum: number }, parent: Task | null): Promise<void> {
+        try {
+            if (this.apiMode()) {
+                await setParent(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, parent);
+            } else {
+                await this.setTaskParentLocal(task, parent);
+            }
+        } catch (e) {
+            new Notice(`Failed to change parent: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        await this.refreshTasks();
+    }
+
+    private async setTaskParentLocal(task: { filePath: string; lineNum: number }, parent: Task | null): Promise<void> {
+        const src = this.app.vault.getAbstractFileByPath(task.filePath);
+        if (!(src instanceof TFile)) throw new Error(`Could not find ${task.filePath}`);
+
+        if (parent === null || parent.filePath === task.filePath) {
+            let ok = true;
+            await this.app.vault.process(src, (content) => {
+                const r = parent === null ? promoteInContent(content, task.lineNum) : setParentInContent(content, task.lineNum, parent.lineNum);
+                if (!r) { ok = false; return content; }
+                return r.content;
+            });
+            if (!ok) throw new Error("that task can't be moved there (a task can't go under itself or its own subtasks)");
+            return;
+        }
+
+        // Parent in another file: add to the destination first, then trim the
+        // source, so a failure can duplicate the task but never lose it.
+        const dst = this.app.vault.getAbstractFileByPath(parent.filePath);
+        if (!(dst instanceof TFile)) throw new Error(`Could not find ${parent.filePath}`);
+        const taken = extractBlock(await this.app.vault.read(src), task.lineNum);
+        if (!taken) throw new Error('that line is no longer a task - refresh and try again');
+        let placed = true;
+        await this.app.vault.process(dst, (content) => {
+            const r = insertBlockUnder(content, parent.lineNum, taken.block, taken.indent);
+            if (!r) { placed = false; return content; }
+            return r.content;
+        });
+        if (!placed) throw new Error('the parent is no longer a task - refresh and try again');
+        await this.app.vault.process(src, (content) => extractBlock(content, task.lineNum)?.rest ?? content);
     }
 
     /** Opens the editor for one of a card's in-place editable fields and saves the result. */
