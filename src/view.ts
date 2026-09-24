@@ -290,24 +290,34 @@ export class KanbanView extends TextFileView {
         if (task.status === 'completed') cardEl.addClass('kanban-card--completed');
         cardEl.setAttr('draggable', 'true');
 
-        // Quick Actions (Done and Delete buttons in the top-right corner on hover)
+        // Quick Actions (Done and Delete buttons in the top-right corner on
+        // hover) - only offered when that column genuinely exists on this
+        // board. Moving onto a tag that isn't one of the board's own columns
+        // would write it to the file but the card would then match none of
+        // this.columns and simply vanish from every column (in API mode, the
+        // server rejects it outright, since kanban_status must be one of the
+        // given kanban_columns) - so don't offer an action that can't work.
         const quickActionsEl = cardEl.createDiv({ cls: 'kanban-card-quick-actions' });
-        
-        const doneBtn = quickActionsEl.createEl('button', { cls: 'kanban-card-quick-btn kanban-card-quick-done', attr: { title: 'Mark done' } });
-        setIcon(doneBtn, 'check');
-        doneBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const doneCol = this.columns.find(c => c.toLowerCase() === 'done') ?? 'Done';
-            void this.moveTask(task, doneCol);
-        });
 
-        const deleteBtn = quickActionsEl.createEl('button', { cls: 'kanban-card-quick-btn kanban-card-quick-delete', attr: { title: 'Mark delete' } });
-        setIcon(deleteBtn, 'trash');
-        deleteBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const deleteCol = this.columns.find(c => c.toLowerCase() === 'delete') ?? 'Delete';
-            void this.moveTask(task, deleteCol);
-        });
+        const doneCol = this.columns.find(c => c.toLowerCase() === 'done');
+        if (doneCol) {
+            const doneBtn = quickActionsEl.createEl('button', { cls: 'kanban-card-quick-btn kanban-card-quick-done', attr: { title: 'Mark done' } });
+            setIcon(doneBtn, 'check');
+            doneBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                void this.moveTask(task, doneCol);
+            });
+        }
+
+        const deleteCol = this.columns.find(c => c.toLowerCase() === 'delete');
+        if (deleteCol) {
+            const deleteBtn = quickActionsEl.createEl('button', { cls: 'kanban-card-quick-btn kanban-card-quick-delete', attr: { title: 'Mark delete' } });
+            setIcon(deleteBtn, 'trash');
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                void this.moveTask(task, deleteCol);
+            });
+        }
 
         cardEl.addEventListener('dragstart', (e) => {
             this.draggedTask = task;
