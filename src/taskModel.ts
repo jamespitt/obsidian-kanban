@@ -21,7 +21,9 @@ export interface Task {
     source?: string;
     user?: string;
     created?: string;
-    /** Date of the last write any local mutator in this file (or the server) made to the line. */
+    /** The task's own `[id::...]` - minted at creation, never changed (see newTaskId). */
+    id?: string;
+    /** Time of the last write any local mutator in this file (or the server) made to the line. */
     updated?: string;
     /** Descendants, in file order. `level` is relative to the card (1 = direct child). */
     subtasks?: Subtask[];
@@ -62,24 +64,61 @@ function todayStr(): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** The time source for `[updated::]` stamps - replaceable in tests. */
+export const clock = { now: (): Date => new Date() };
+
 /**
- * Sets or replaces the `[updated::DATE]` field on a task line's raw body
- * text, appended at the end like the other field setters below. Every local
- * mutator that rewrites a task line calls this last, mirroring touchUpdated
- * in pkg/tasks/tasks.go (the server does the same for API-mode writes) so
- * `updated` tracks the date of the line's last write regardless of mode.
+ * "2026-03-27T14:03:27Z" for now: UTC, to the second. The `[updated::]`
+ * format - matches nowStamp() in pkg/tasks/tasks.go and UPDATED_FORMAT in
+ * tasks/src/task_model.py.
  */
-function touchUpdated(raw: string): string {
-    return `${raw.replace(UPDATED_RE, '').trim()} [updated::${todayStr()}]`.trim();
+export function nowStamp(): string {
+    return clock.now().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/**
+ * Sets or replaces the `[updated::TIMESTAMP]` field on a task line's raw
+ * body text, appended at the end like the other field setters below. Every
+ * local mutator that rewrites a task line calls this last, mirroring
+ * touchUpdated in pkg/tasks/tasks.go (the server does the same for API-mode
+ * writes) so `updated` tracks the time of the line's last write regardless
+ * of mode.
+ */
+function touchUpdated(raw: string): string {
+    return `${raw.replace(UPDATED_RE, '').trim()} [updated::${nowStamp()}]`.trim();
+}
+
+/** Crockford base32 (no i, l, o, u), lower case. */
+const ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+const ID_LENGTH = 10;
+
+/** The source of new `[id::]` values - replaceable in tests. */
+export const idSource = {
+    next: (): string => {
+        const bytes = new Uint8Array(ID_LENGTH);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, b => ID_ALPHABET[b & 31]).join('');
+    }
+};
+
+/**
+ * A fresh random `[id::]` value for a task that is being created: 10
+ * characters of base32 (50 bits) - matches newTaskID in pkg/tasks/tasks.go
+ * and new_task_id in tasks/src/task_model.py.
+ */
+export function newTaskId(): string {
+    return idSource.next();
+}
+
+const ID_FIELD_RE = /\[id\s*::\s*[^\]]*\]/i;
 const CREATED_FIELD_RE = /\[created\s*::\s*[^\]]*\]/i;
 const ANY_TAG_RE = /#[\w/]+/;
 
 /**
  * Prepares a brand-new task's raw body text: adds #ToTriage when it carries
  * no tag at all, sets [created::DATE] when the caller didn't already
- * include one, and touches [updated::DATE] - mirrors stampCreated in
+ * include one, gives the task its [id::] unless the caller supplied one,
+ * and touches [updated::TIMESTAMP] - mirrors stampCreated in
  * pkg/tasks/tasks.go. Called by every local task-creation path (adding a
  * task or a subtask); the server applies the equivalent in API mode.
  */
@@ -90,6 +129,9 @@ export function stampCreated(raw: string): string {
     }
     if (!CREATED_FIELD_RE.test(out)) {
         out = `${out} [created::${todayStr()}]`.trim();
+    }
+    if (!ID_FIELD_RE.test(out)) {
+        out = `${out} [id::${newTaskId()}]`.trim();
     }
     return touchUpdated(out);
 }
@@ -143,6 +185,7 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
         source: fields.source,
         user: fields.user,
         created: created || fields.created,
+        id: fields.id,
         updated: updated || fields.updated
     };
 }

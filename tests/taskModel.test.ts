@@ -25,8 +25,26 @@ import {
     splitScheduled,
     joinScheduled,
     addSubtaskInContent,
-    stampCreated
+    stampCreated,
+    clock,
+    nowStamp,
+    idSource,
+    newTaskId
 } from '../src/taskModel';
+
+// Freeze the plugin's clock so [updated::] stamps can be asserted exactly.
+const FROZEN = new Date();
+clock.now = () => FROZEN;
+
+// Pin the id generator too, so created lines can be asserted whole.
+const TEST_ID = 'testtask00';
+const randomId = idSource.next;
+idSource.next = () => TEST_ID;
+
+/** The [updated::] value the code under test writes. */
+function stamp(): string {
+    return FROZEN.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 
 // Mirrors todayStr() in taskModel.ts, for asserting on [created::]/[updated::]
 // stamps without depending on the exact date the tests happen to run on.
@@ -110,43 +128,43 @@ function run() {
     // Matches pkg/tasks.go's SetStatusTag exactly: the removed tag leaves an
     // internal double space (only trimmed at the ends), and the new status
     // tag is appended at the end rather than reinserted in its old spot.
-    // Every write also touches [updated::TODAY] (touchUpdated), same as the
+    // Every write also touches [updated::NOW] (touchUpdated), same as the
     // server's SetStatusTagIn.
     const moved = setStatusTagInContent(file, 3, 'InProgress');
     const movedLines = moved.split('\n');
-    assertEqual(movedLines[2], `- [ ] Buy milk #groceries  [due::2026-08-20] #InProgress [updated::${today()}]`,
+    assertEqual(movedLines[2], `- [ ] Buy milk #groceries  [due::2026-08-20] #InProgress [updated::${stamp()}]`,
         'setStatusTagInContent swaps the tag, keeps other tags/fields, keeps checkbox unchecked');
 
     const completed = setStatusTagInContent(file, 3, 'Done');
     const completedLines = completed.split('\n');
-    assertEqual(completedLines[2], `- [x] Buy milk #groceries  [due::2026-08-20] #Done [updated::${today()}]`,
+    assertEqual(completedLines[2], `- [x] Buy milk #groceries  [due::2026-08-20] #Done [updated::${stamp()}]`,
         'setStatusTagInContent checks the box when moving to Done');
 
     const removed = setStatusTagInContent(file, 3, null);
     const removedLines = removed.split('\n');
-    assertEqual(removedLines[2], `- [ ] Buy milk #groceries  [due::2026-08-20] [updated::${today()}]`,
+    assertEqual(removedLines[2], `- [ ] Buy milk #groceries  [due::2026-08-20] [updated::${stamp()}]`,
         'setStatusTagInContent removes the status tag entirely when given null');
 
     const untouched = setStatusTagInContent(file, 4, 'ToDo');
-    assertEqual(untouched.split('\n')[3], `- [ ] Other task #ToDo [updated::${today()}]`, 'targets only the given line');
+    assertEqual(untouched.split('\n')[3], `- [ ] Other task #ToDo [updated::${stamp()}]`, 'targets only the given line');
 
     const outOfRange = setStatusTagInContent(file, 99, 'ToDo');
     assertEqual(outOfRange, file, 'is a no-op for an out-of-range line number');
 
     const uncheckedFromDone = setStatusTagInContent('- [x] Done item #Done\n', 1, 'ToDo');
-    assertEqual(uncheckedFromDone.trimEnd(), `- [ ] Done item #ToDo [updated::${today()}]`, 'un-checks the box when moving off Done');
+    assertEqual(uncheckedFromDone.trimEnd(), `- [ ] Done item #ToDo [updated::${stamp()}]`, 'un-checks the box when moving off Done');
 
     // Custom columns: only the board's own tags get stripped, and only a
     // column literally named "Done" (case-insensitive) completes the task.
     const customFile = '- [ ] Ship it #Backlog\n';
     const toShipped = setStatusTagInContent(customFile, 1, 'Shipped', ['Backlog', 'InReview', 'Shipped']);
-    assertEqual(toShipped.trimEnd(), `- [ ] Ship it #Shipped [updated::${today()}]`, 'moves within a custom column set, no #Done involved');
+    assertEqual(toShipped.trimEnd(), `- [ ] Ship it #Shipped [updated::${stamp()}]`, 'moves within a custom column set, no #Done involved');
 
     const toDoneCustom = setStatusTagInContent(customFile, 1, 'done', ['Backlog', 'InReview', 'done']);
-    assertEqual(toDoneCustom.trimEnd(), `- [x] Ship it #done [updated::${today()}]`, 'a custom column literally named "done" (any case) still completes the task');
+    assertEqual(toDoneCustom.trimEnd(), `- [x] Ship it #done [updated::${stamp()}]`, 'a custom column literally named "done" (any case) still completes the task');
 
     const leavesOtherTags = setStatusTagInContent('- [ ] Ship it #Backlog #urgent\n', 1, 'InReview', ['Backlog', 'InReview']);
-    assertEqual(leavesOtherTags.trimEnd(), `- [ ] Ship it  #urgent #InReview [updated::${today()}]`,
+    assertEqual(leavesOtherTags.trimEnd(), `- [ ] Ship it  #urgent #InReview [updated::${stamp()}]`,
         "only the board's own column tags are stripped - a non-column tag like #urgent is left alone");
 
     // --- sameColumns ---
@@ -180,42 +198,42 @@ function run() {
     const movedCustomDone = applyKanbanStatus(customColumnTask, 'done', ['Backlog', 'InReview', 'done']);
     assertEqual(movedCustomDone.status, 'completed', 'applyKanbanStatus completes on a custom column literally named "done"');
 
-    // --- setDueDateInContent --- (every write touches [updated::TODAY], same as setFieldInContent below)
+    // --- setDueDateInContent --- (every write touches [updated::NOW], same as setFieldInContent below)
     const dueTestFile = '- [ ] Buy bread #groceries [due::2026-09-01]\n- [ ] Plain task\n';
     const dueUpdated = setDueDateInContent(dueTestFile, 1, '2026-09-18');
-    assertEqual(dueUpdated.split('\n')[0], `- [ ] Buy bread #groceries [due::2026-09-18] [updated::${today()}]`,
+    assertEqual(dueUpdated.split('\n')[0], `- [ ] Buy bread #groceries [due::2026-09-18] [updated::${stamp()}]`,
         'setDueDateInContent updates an existing due date');
 
     const dueUpdatedWithTime = setDueDateInContent(dueTestFile, 1, '2026-09-18 14:30');
-    assertEqual(dueUpdatedWithTime.split('\n')[0], `- [ ] Buy bread #groceries [due::2026-09-18 14:30] [updated::${today()}]`,
+    assertEqual(dueUpdatedWithTime.split('\n')[0], `- [ ] Buy bread #groceries [due::2026-09-18 14:30] [updated::${stamp()}]`,
         'setDueDateInContent updates an existing due date with date and time');
 
     const dueRemoved = setDueDateInContent(dueTestFile, 1, null);
-    assertEqual(dueRemoved.split('\n')[0], `- [ ] Buy bread #groceries [updated::${today()}]`,
+    assertEqual(dueRemoved.split('\n')[0], `- [ ] Buy bread #groceries [updated::${stamp()}]`,
         'setDueDateInContent removes an existing due date');
 
     const dueAdded = setDueDateInContent(dueTestFile, 2, '2026-09-18');
-    assertEqual(dueAdded.split('\n')[1], `- [ ] Plain task [due::2026-09-18] [updated::${today()}]`,
+    assertEqual(dueAdded.split('\n')[1], `- [ ] Plain task [due::2026-09-18] [updated::${stamp()}]`,
         'setDueDateInContent adds a due date if none existed');
 
     const dueAddedWithTime = setDueDateInContent(dueTestFile, 2, '2026-09-18 14:30');
-    assertEqual(dueAddedWithTime.split('\n')[1], `- [ ] Plain task [due::2026-09-18 14:30] [updated::${today()}]`,
+    assertEqual(dueAddedWithTime.split('\n')[1], `- [ ] Plain task [due::2026-09-18 14:30] [updated::${stamp()}]`,
         'setDueDateInContent adds a due date and time if none existed');
 
     // --- setFieldInContent (scheduled / priority / repeat) ---
     const fieldFile = '- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [priority::high] [google_id::abc]\n- [x] Plain\n';
     assertEqual(setFieldInContent(fieldFile, 1, 'scheduled', '2026-09-05T10:00').split('\n')[0],
-        `- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-05T10:00] [priority::high] [google_id::abc] [updated::${today()}]`,
+        `- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-05T10:00] [priority::high] [google_id::abc] [updated::${stamp()}]`,
         'setFieldInContent replaces scheduled in place, leaving every other field alone');
     assertEqual(setFieldInContent(fieldFile, 1, 'priority', null).split('\n')[0],
-        `- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [google_id::abc] [updated::${today()}]`,
+        `- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [google_id::abc] [updated::${stamp()}]`,
         'setFieldInContent removes priority when cleared');
-    assertEqual(setFieldInContent(fieldFile, 2, 'repeat', 'every week').split('\n')[1], `- [x] Plain [repeat::every week] [updated::${today()}]`,
+    assertEqual(setFieldInContent(fieldFile, 2, 'repeat', 'every week').split('\n')[1], `- [x] Plain [repeat::every week] [updated::${stamp()}]`,
         'setFieldInContent adds a missing repeat and keeps the checkbox state');
     assertEqual(setFieldInContent(fieldFile, 1, 'repeat', ''),
-        `- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [priority::high] [google_id::abc] [updated::${today()}]\n- [x] Plain\n`,
+        `- [ ] Standup #ToDo [due::2026-09-01] [scheduled::2026-09-02T09:30] [priority::high] [google_id::abc] [updated::${stamp()}]\n- [x] Plain\n`,
         'setFieldInContent with an empty value on a missing field still stamps [updated::], even though no field changed');
-    assertEqual(setFieldInContent('- [ ] Odd [Priority :: low]', 1, 'priority', 'high'), `- [ ] Odd [priority::high] [updated::${today()}]`,
+    assertEqual(setFieldInContent('- [ ] Odd [Priority :: low]', 1, 'priority', 'high'), `- [ ] Odd [priority::high] [updated::${stamp()}]`,
         'setFieldInContent matches the key case-insensitively and with spaces around ::');
     assertEqual(setFieldInContent(fieldFile, 99, 'repeat', 'x'), fieldFile, 'setFieldInContent ignores an out-of-range line');
     assertEqual(setFieldInContent('not a task', 1, 'repeat', 'x'), 'not a task', 'setFieldInContent ignores a non-task line');
@@ -236,19 +254,19 @@ function run() {
     // --- re-parenting (mirrors the Go tests in pkg/tasks/subtasks_test.go) ---
     const tree = '# L\n- [ ] A #ToDo\n    - [ ] A1\n        - [ ] A1a\n    - [ ] A2\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n';
 
-    // Moving a task stamps [updated::TODAY] on its own line only (not its
+    // Moving a task stamps [updated::NOW] on its own line only (not its
     // descendants), matching SetParent in pkg/tasks/subtasks.go.
     const r1 = setParentInContent(tree, 7, 2);
-    assertEqual(r1?.content, `# L\n- [ ] A #ToDo\n    - [ ] A1\n        - [ ] A1a\n    - [ ] A2\n    - [ ] C [updated::${today()}]\n- [ ] B #ToDo\n- [ ] D\n    - [ ] D1\n`,
+    assertEqual(r1?.content, `# L\n- [ ] A #ToDo\n    - [ ] A1\n        - [ ] A1a\n    - [ ] A2\n    - [ ] C [updated::${stamp()}]\n- [ ] B #ToDo\n- [ ] D\n    - [ ] D1\n`,
         'setParentInContent puts C after the last descendant of A, one level deeper');
     assertEqual(r1?.newLine, 6, 'setParentInContent reports the new line');
 
     const r2 = setParentInContent(tree, 6, 9);
-    assertEqual(r2?.content?.includes(`- [ ] D\n    - [ ] D1\n        - [ ] B #ToDo [updated::${today()}]\n`), true, 'setParentInContent nests two levels deep when the parent is after the source');
+    assertEqual(r2?.content?.includes(`- [ ] D\n    - [ ] D1\n        - [ ] B #ToDo [updated::${stamp()}]\n`), true, 'setParentInContent nests two levels deep when the parent is after the source');
     assertEqual(r2?.newLine, 9, 'setParentInContent reports the line after removing an earlier block');
 
     const r3 = setParentInContent(tree, 2, 8);
-    assertEqual(r3?.content, `# L\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n    - [ ] A #ToDo [updated::${today()}]\n        - [ ] A1\n            - [ ] A1a\n        - [ ] A2\n`,
+    assertEqual(r3?.content, `# L\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n    - [ ] A #ToDo [updated::${stamp()}]\n        - [ ] A1\n            - [ ] A1a\n        - [ ] A2\n`,
         'setParentInContent moves the whole subtree, shifting every level');
 
     for (const parent of [2, 3, 4, 5]) {
@@ -258,19 +276,19 @@ function run() {
     assertEqual(setParentInContent(tree, 7, 1), null, 'setParentInContent rejects a non-task parent');
 
     const pr = promoteInContent(tree, 3);
-    assertEqual(pr?.content, `# L\n- [ ] A #ToDo\n    - [ ] A2\n- [ ] A1 [updated::${today()}]\n    - [ ] A1a\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n`,
+    assertEqual(pr?.content, `# L\n- [ ] A #ToDo\n    - [ ] A2\n- [ ] A1 [updated::${stamp()}]\n    - [ ] A1a\n- [ ] B #ToDo\n- [ ] C\n- [ ] D\n    - [ ] D1\n`,
         'promoteInContent makes A1 top level after A\'s subtree, bringing A1a along');
     assertEqual(pr?.newLine, 4, 'promoteInContent reports the new line');
     // Already top level: a genuine no-op, so no [updated::] stamp either
     // (mirrors promote()'s early return in pkg/tasks/subtasks.go).
     assertEqual(promoteInContent(tree, 6)?.content, tree, 'promoteInContent leaves a top-level task alone');
-    assertEqual(setParentInContent('# L\n- [ ] A\n- [ ] B', 3, 2)?.content, `# L\n- [ ] A\n    - [ ] B [updated::${today()}]`, 'setParentInContent keeps a missing trailing newline missing');
+    assertEqual(setParentInContent('# L\n- [ ] A\n- [ ] B', 3, 2)?.content, `# L\n- [ ] A\n    - [ ] B [updated::${stamp()}]`, 'setParentInContent keeps a missing trailing newline missing');
 
     // cross-file: extract from one file, insert into another
     const taken = extractBlock('# L\n- [ ] X #ToDo\n    - [ ] X1\n- [ ] Y\n', 2);
     assertEqual(taken?.rest, '# L\n- [ ] Y\n', 'extractBlock removes the task and its subtasks');
     const placed = insertBlockUnder('# M\n- [ ] P\n- [ ] Q\n', 2, taken?.block ?? [], taken?.indent ?? 0);
-    assertEqual(placed?.content, `# M\n- [ ] P\n    - [ ] X #ToDo [updated::${today()}]\n        - [ ] X1\n- [ ] Q\n`, 'insertBlockUnder nests the block under the parent in the other file');
+    assertEqual(placed?.content, `# M\n- [ ] P\n    - [ ] X #ToDo [updated::${stamp()}]\n        - [ ] X1\n- [ ] Q\n`, 'insertBlockUnder nests the block under the parent in the other file');
     assertEqual(placed?.newLine, 3, 'insertBlockUnder reports the new line');
 
     // --- foldSubtasks (mirrors KanbanCardsIn) ---
@@ -308,18 +326,46 @@ function run() {
     const subtaskAdded = addSubtaskInContent(subtaskTestFile, 1, 'Slice it');
     assertEqual(subtaskAdded.split('\n')[0], '- [ ] Buy bread #groceries [due::2026-09-01]',
         'addSubtaskInContent preserves parent line');
-    assertEqual(subtaskAdded.split('\n')[1], `    - [ ] Slice it #ToTriage [created::${today()}] [updated::${today()}]`,
+    assertEqual(subtaskAdded.split('\n')[1], `    - [ ] Slice it #ToTriage [created::${today()}] [id::${TEST_ID}] [updated::${stamp()}]`,
         'addSubtaskInContent adds indented subtask checklist line, stamped as a new task');
 
     assertEqual(KANBAN_STATUSES, ['ToDo', 'InProgress', 'Done', 'Delete'], 'KANBAN_STATUSES matches pkg/tasks and api.ts');
 
     // --- stampCreated (mirrors stampCreated in pkg/tasks/tasks.go) ---
-    assertEqual(stampCreated('No tags here'), `No tags here #ToTriage [created::${today()}] [updated::${today()}]`,
+    assertEqual(stampCreated('No tags here'), `No tags here #ToTriage [created::${today()}] [id::${TEST_ID}] [updated::${stamp()}]`,
         'stampCreated adds #ToTriage plus created/updated when the task has no tag at all');
-    assertEqual(stampCreated('Already tagged #ToDo'), `Already tagged #ToDo [created::${today()}] [updated::${today()}]`,
+    assertEqual(stampCreated('Already tagged #ToDo'), `Already tagged #ToDo [created::${today()}] [id::${TEST_ID}] [updated::${stamp()}]`,
         'stampCreated leaves an existing tag alone - no #ToTriage added');
-    assertEqual(stampCreated('Explicit date #ToDo [created::2026-01-01]'), `Explicit date #ToDo [created::2026-01-01] [updated::${today()}]`,
+    assertEqual(stampCreated('Explicit date #ToDo [created::2026-01-01]'), `Explicit date #ToDo [created::2026-01-01] [id::${TEST_ID}] [updated::${stamp()}]`,
         "stampCreated keeps a caller-supplied [created::] instead of overwriting it");
+
+    // --- [id::] ---
+
+    assertEqual(stampCreated('Has one #ToDo [created::2026-01-01] [id::keepme0000]'), `Has one #ToDo [created::2026-01-01] [id::keepme0000] [updated::${stamp()}]`,
+        'stampCreated keeps a caller-supplied [id::] instead of minting another');
+    const withId = '- [ ] Buy milk #ToDo [id::abcdefgh12] [updated::2026-09-29]';
+    assertEqual(parseTaskLine(withId, 'Work.md', 1)!.id, 'abcdefgh12', 'parseTaskLine exposes the [id::]');
+    assertEqual(parseTaskLine(withId, 'Work.md', 1)!.title, 'Buy milk', 'the [id::] field is not part of the title');
+    const movedWithId = setStatusTagInContent(withId, 1, 'InProgress');
+    assertEqual([movedWithId.includes('[id::abcdefgh12]'), movedWithId.endsWith(`#InProgress [updated::${stamp()}]`)], [true, true],
+        'a later write keeps the [id::] and moves only the stamp');
+    const ids = new Set<string>();
+    for (let i = 0; i < 200; i++) ids.add(randomId());
+    assertEqual(ids.size, 200, 'random ids do not repeat');
+    assertEqual([...ids].every(id => /^[0-9a-hjkmnp-tv-z]{10}$/.test(id)), true, 'ids are 10 Crockford base32 characters');
+    assertEqual(newTaskId(), TEST_ID, 'newTaskId goes through idSource');
+
+    // --- nowStamp / [updated::] format ---
+
+    const realNow = clock.now;
+    clock.now = () => new Date('2026-10-01T12:56:10.461+01:00');
+    assertEqual(nowStamp(), '2026-10-01T11:56:10Z', 'nowStamp is UTC to the second, with no milliseconds');
+    assertEqual(setDueDateInContent('- [ ] Old stamp [updated::2026-09-29]', 1, '2026-10-05'),
+        '- [ ] Old stamp  [due::2026-10-05] [updated::2026-10-01T11:56:10Z]',
+        'a write replaces an old date-only [updated::] with a full timestamp');
+    clock.now = realNow;
+    const reparsed = parseTaskLine('- [ ] T #ToDo [updated::2026-10-01T11:56:10Z]', 'Work.md', 1)!;
+    assertEqual(reparsed.updated, '2026-10-01T11:56:10Z', 'parseTaskLine reads a full [updated::] timestamp back whole');
 
     // --- matchesFilter ---
 
@@ -381,11 +427,11 @@ function run() {
     const linkFile = '# Work\n\n- [ ] Buy milk #groceries #ToDo [due::2026-08-20]\n- [ ] Bare task\n';
 
     const linked = addNoteLinkToContent(linkFile, 3, 'Groceries Plan');
-    assertEqual(linked.split('\n')[2], `- [ ] Buy milk   [[Groceries Plan]] #groceries #ToDo [due::2026-08-20] [updated::${today()}]`,
+    assertEqual(linked.split('\n')[2], `- [ ] Buy milk   [[Groceries Plan]] #groceries #ToDo [due::2026-08-20] [updated::${stamp()}]`,
         'inserts the note link right after the title, before tags/fields, and stamps [updated::]');
 
     const linkedBare = addNoteLinkToContent(linkFile, 4, 'Some Note');
-    assertEqual(linkedBare.split('\n')[3], `- [ ] Bare task   [[Some Note]] [updated::${today()}]`,
+    assertEqual(linkedBare.split('\n')[3], `- [ ] Bare task   [[Some Note]] [updated::${stamp()}]`,
         'appends cleanly to a task with no tags/fields');
 
     const linkedOutOfRange = addNoteLinkToContent(linkFile, 99, 'Some Note');

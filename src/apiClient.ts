@@ -56,6 +56,8 @@ export interface ApiTask {
     tags: string[];
     list_name: string;
     google_id?: string;
+    /** The task's own `[id::...]`. */
+    id?: string;
     created?: string;
     source?: string;
     user?: string;
@@ -273,6 +275,7 @@ export function apiTaskToTask(apiTask: ApiTask): Task {
         tags: apiTask.tags ?? [],
         listName: apiTask.list_name,
         created: apiTask.created,
+        id: apiTask.id,
         updated: apiTask.updated,
         source: apiTask.source,
         user: apiTask.user,
