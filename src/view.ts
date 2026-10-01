@@ -26,7 +26,8 @@ import {
     setParentInContent,
     promoteInContent,
     extractBlock,
-    insertBlockUnder
+    insertBlockUnder,
+    stampCreated
 } from './taskModel';
 import { DueDatePickerModal } from './DueDatePickerModal';
 import { AddTaskModal, AddTaskTarget } from './AddTaskModal';
@@ -777,7 +778,7 @@ export class KanbanView extends TextFileView {
                         new Notice(`Could not find ${target}`);
                         return;
                     }
-                    await this.app.vault.append(file, `\n- [${isDone ? 'x' : ' '}] ${title} ${tags}`);
+                    await this.app.vault.append(file, `\n- [${isDone ? 'x' : ' '}] ${stampCreated(`${title} ${tags}`)}`);
                 }
             } catch (e) {
                 new Notice(`Failed to add task: ${e instanceof Error ? e.message : String(e)}`);

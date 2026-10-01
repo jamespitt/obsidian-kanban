@@ -60,6 +60,8 @@ export interface ApiTask {
     source?: string;
     user?: string;
     level?: number;
+    /** Date of the last write any mutator made to the line, server or plugin. */
+    updated?: string;
     /** "file_path:line_num" of the parent, when the task is nested. */
     parent_id?: string;
     type?: 'task' | 'event';
@@ -271,6 +273,7 @@ export function apiTaskToTask(apiTask: ApiTask): Task {
         tags: apiTask.tags ?? [],
         listName: apiTask.list_name,
         created: apiTask.created,
+        updated: apiTask.updated,
         source: apiTask.source,
         user: apiTask.user,
         level: apiTask.level,

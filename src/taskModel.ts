@@ -21,6 +21,8 @@ export interface Task {
     source?: string;
     user?: string;
     created?: string;
+    /** Date of the last write any local mutator in this file (or the server) made to the line. */
+    updated?: string;
     /** Descendants, in file order. `level` is relative to the card (1 = direct child). */
     subtasks?: Subtask[];
     /** Indent depth (0 = top level). Set by the local scan and by the server. */
@@ -52,6 +54,45 @@ const TASK_LINE_RE = /^(\s*)-\s*\[([xX ])\]\s+(.*)$/;
 const DATAVIEW_RE = /\[([^\]]+?)::([^\]]*)\]/g;
 const TAG_RE = /#([\w/]+)/g;
 const CREATED_RE = /\[created\s*::?\s*([^\]]+)\]/gi;
+const UPDATED_RE = /\[updated\s*::?\s*([^\]]+)\]/gi;
+
+/** "2026-03-27" for today, local time - matches Go's today() in pkg/tasks/tasks.go. */
+function todayStr(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Sets or replaces the `[updated::DATE]` field on a task line's raw body
+ * text, appended at the end like the other field setters below. Every local
+ * mutator that rewrites a task line calls this last, mirroring touchUpdated
+ * in pkg/tasks/tasks.go (the server does the same for API-mode writes) so
+ * `updated` tracks the date of the line's last write regardless of mode.
+ */
+function touchUpdated(raw: string): string {
+    return `${raw.replace(UPDATED_RE, '').trim()} [updated::${todayStr()}]`.trim();
+}
+
+const CREATED_FIELD_RE = /\[created\s*::\s*[^\]]*\]/i;
+const ANY_TAG_RE = /#[\w/]+/;
+
+/**
+ * Prepares a brand-new task's raw body text: adds #ToTriage when it carries
+ * no tag at all, sets [created::DATE] when the caller didn't already
+ * include one, and touches [updated::DATE] - mirrors stampCreated in
+ * pkg/tasks/tasks.go. Called by every local task-creation path (adding a
+ * task or a subtask); the server applies the equivalent in API mode.
+ */
+export function stampCreated(raw: string): string {
+    let out = raw.trim();
+    if (!ANY_TAG_RE.test(out)) {
+        out = `${out} #ToTriage`.trim();
+    }
+    if (!CREATED_FIELD_RE.test(out)) {
+        out = `${out} [created::${todayStr()}]`.trim();
+    }
+    return touchUpdated(out);
+}
 
 /** Parses a single line into a Task, or null if it isn't a task checkbox. */
 export function parseTaskLine(line: string, filePath: string, lineNum: number): Task | null {
@@ -71,6 +112,9 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
     const createdMatch = /\[created\s*::?\s*([^\]]+)\]/i.exec(rawBody ?? '');
     const created = createdMatch ? createdMatch[1]?.trim() : undefined;
 
+    const updatedMatch = /\[updated\s*::?\s*([^\]]+)\]/i.exec(rawBody ?? '');
+    const updated = updatedMatch ? updatedMatch[1]?.trim() : undefined;
+
     const tags: string[] = [];
     for (const tm of (rawBody ?? '').matchAll(TAG_RE)) {
         if (tm[1]) tags.push(tm[1]);
@@ -79,6 +123,7 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
     const title = (rawBody ?? '')
         .replace(DATAVIEW_RE, '')
         .replace(CREATED_RE, '')
+        .replace(UPDATED_RE, '')
         .replace(TAG_RE, '')
         .trim();
 
@@ -97,7 +142,8 @@ export function parseTaskLine(line: string, filePath: string, lineNum: number): 
         listName,
         source: fields.source,
         user: fields.user,
-        created: created || fields.created
+        created: created || fields.created,
+        updated: updated || fields.updated
     };
 }
 
@@ -289,7 +335,7 @@ export function setStatusTagInContent(
     if (status) raw = `${raw} #${status}`.trim();
 
     const checkbox = status?.toLowerCase() === 'done' ? 'x' : ' ';
-    lines[idx] = `${indent ?? ''}- [${checkbox}] ${raw}`;
+    lines[idx] = `${indent ?? ''}- [${checkbox}] ${touchUpdated(raw)}`;
     return lines.join('\n');
 }
 
@@ -366,7 +412,7 @@ export function addNoteLinkToContent(content: string, lineNum: number, noteTitle
     const newRaw = restPart
         ? `${titlePart}   [[${noteTitle}]] ${restPart}`
         : `${titlePart}   [[${noteTitle}]]`;
-    lines[idx] = `${indent ?? ''}- [${statusChar}] ${newRaw}`;
+    lines[idx] = `${indent ?? ''}- [${statusChar}] ${touchUpdated(newRaw)}`;
     return lines.join('\n');
 }
 
@@ -415,7 +461,7 @@ export function setFieldInContent(content: string, lineNum: number, key: Editabl
         raw = `${raw} [${key}::${value}]`.trim();
     }
 
-    lines[idx] = `${indent ?? ''}- [${statusChar}] ${raw}`;
+    lines[idx] = `${indent ?? ''}- [${statusChar}] ${touchUpdated(raw)}`;
     return lines.join('\n');
 }
 
@@ -440,7 +486,7 @@ export function addSubtaskInContent(content: string, lineNum: number, subtaskTit
 
     const [, indent] = m;
     const subIndent = (indent ?? '') + '    ';
-    const subtaskLine = `${subIndent}- [ ] ${subtaskTitle}`;
+    const subtaskLine = `${subIndent}- [ ] ${stampCreated(subtaskTitle)}`;
 
     lines.splice(lineNum, 0, subtaskLine);
     return lines.join('\n');
@@ -476,6 +522,22 @@ function reindent(line: string, delta: number): string {
     return line.replace(new RegExp(`^[ \\t]{0,${-delta}}`), '');
 }
 
+/**
+ * Touches [updated::] on a block's own first line (the task being moved,
+ * not its subtasks), mirroring the [updated::] stamp SetParent writes in
+ * pkg/tasks/subtasks.go before reindenting a moved block.
+ */
+function stampBlockHead(block: string[]): string[] {
+    const line = block[0];
+    if (line === undefined) return block;
+    const m = BLOCK_TASK_RE.exec(line);
+    if (!m) return block;
+    const [, indent, statusChar, rawBody] = m;
+    const stamped = [...block];
+    stamped[0] = `${indent ?? ''}- [${statusChar}] ${touchUpdated(rawBody ?? '')}`;
+    return stamped;
+}
+
 /** Removes the task at `lineNum` (1-based) with its subtasks. Null if that line isn't a task. */
 export function extractBlock(content: string, lineNum: number): { block: string[]; rest: string; indent: number } | null {
     const lines = content.split('\n');
@@ -498,7 +560,7 @@ export function insertBlockUnder(content: string, parentLine: number, block: str
     if (pIndent === null) return null;
     const insertAt = blockEnd(lines, pIdx);
     const delta = pIndent + 4 - blockIndent;
-    const moved = block.map((l) => reindent(l, delta));
+    const moved = stampBlockHead(block).map((l) => reindent(l, delta));
     return { content: [...lines.slice(0, insertAt), ...moved, ...lines.slice(insertAt)].join('\n'), newLine: insertAt + 1 };
 }
 
@@ -536,6 +598,6 @@ export function promoteInContent(content: string, lineNum: number): { content: s
     if (!taken) return null;
     const rest = taken.rest.split('\n');
     const insertAt = blockEnd(rest, root);
-    const moved = taken.block.map((l) => reindent(l, -indent));
+    const moved = stampBlockHead(taken.block).map((l) => reindent(l, -indent));
     return { content: [...rest.slice(0, insertAt), ...moved, ...rest.slice(insertAt)].join('\n'), newLine: insertAt + 1 };
 }

@@ -310,8 +310,9 @@ async function run() {
 
     {
         const t = apiTaskToTask({ file_path: 'W.md', line_num: 1, title: 'x', status: 'todo', tags: [], list_name: 'W',
-            created: '2026-09-22', source: 'wiki/a.md', user: 'A, B' });
-        assertEqual([t.created, t.source, t.user], ['2026-09-22', 'wiki/a.md', 'A, B'], 'apiTaskToTask carries created/source/user from the server');
+            created: '2026-09-22', updated: '2026-09-25', source: 'wiki/a.md', user: 'A, B' });
+        assertEqual([t.created, t.updated, t.source, t.user], ['2026-09-22', '2026-09-25', 'wiki/a.md', 'A, B'],
+            'apiTaskToTask carries created/updated/source/user from the server');
     }
 
     console.debug('\nAll apiClient checks passed.');
