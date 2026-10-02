@@ -457,7 +457,7 @@ export class KanbanView extends TextFileView {
             if (task.listName) metaEl.createSpan({ cls: 'kanban-card-list', text: task.listName });
             if (task.due) {
                 const dueBtn = metaEl.createEl('button', { cls: 'kanban-card-due-btn', attr: { title: 'Edit due date' } });
-                dueBtn.createSpan({ text: `\u{1F4C5} ${task.due}` });
+                dueBtn.createSpan({ text: `\u{1F4C5} ${task.due.replace('T', ' ')}` });
                 dueBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     new DueDatePickerModal(this.app, task.due || '', (date) => {

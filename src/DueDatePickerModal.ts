@@ -1,4 +1,5 @@
 import { App, Modal, Setting, ButtonComponent } from 'obsidian';
+import { joinScheduled, splitScheduled } from './taskModel';
 
 export class DueDatePickerModal extends Modal {
     dateVal: string = '';
@@ -9,12 +10,9 @@ export class DueDatePickerModal extends Modal {
         super(app);
         this.onSubmit = onSubmit;
         
-        const trimmed = (initialDue || '').trim();
-        if (trimmed) {
-            const parts = trimmed.split(' ');
-            this.dateVal = parts[0] || '';
-            this.timeVal = parts[1] || '';
-        }
+        // Accepts `2026-03-27T09:30` (what every client writes) and the
+        // older space-separated `2026-03-27 09:30`.
+        ({ date: this.dateVal, time: this.timeVal } = splitScheduled(initialDue));
     }
 
     onOpen() {
@@ -97,15 +95,9 @@ export class DueDatePickerModal extends Modal {
                 .setCta()
                 .onClick(() => {
                     this.close();
-                    const finalDate = this.dateVal.trim();
-                    const finalTime = this.timeVal.trim();
-                    if (!finalDate) {
-                        void this.onSubmit('');
-                    } else if (finalTime) {
-                        void this.onSubmit(`${finalDate} ${finalTime}`);
-                    } else {
-                        void this.onSubmit(finalDate);
-                    }
+                    // ISO 8601 (`2026-03-27T09:30`), local time - the same
+                    // format as [scheduled::] and as task-front-end/Android.
+                    void this.onSubmit(joinScheduled(this.dateVal.trim(), this.timeVal.trim()));
                 }))
             .addButton(btn => btn
                 .setButtonText('Clear date')
