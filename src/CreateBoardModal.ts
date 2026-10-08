@@ -1,14 +1,17 @@
 import { App, Modal, Setting } from 'obsidian';
+import { boardProjectOptions } from './taskModel';
 
 export class CreateBoardModal extends Modal {
     boardName: string = '';
     filterTags: string = '';
     columnTags: string = '';
-    onSubmit: (boardName: string, filterTags: string, columnTags: string) => void | Promise<void>;
+    project: string = '';
+    onSubmit: (boardName: string, filterTags: string, columnTags: string, project: string) => void | Promise<void>;
 
     constructor(
         app: App,
-        onSubmit: (boardName: string, filterTags: string, columnTags: string) => void | Promise<void>
+        private readonly projects: string[],
+        onSubmit: (boardName: string, filterTags: string, columnTags: string, project: string) => void | Promise<void>
     ) {
         super(app);
         this.onSubmit = onSubmit;
@@ -42,6 +45,19 @@ export class CreateBoardModal extends Modal {
                 }));
 
         new Setting(contentEl)
+            .setName('Project (optional)')
+            .setDesc('Only show tasks linked to this project, or tasks with no project. Leave it on all projects to show every project.')
+            .addDropdown(dropdown => {
+                for (const { value, label } of boardProjectOptions(this.projects, '')) {
+                    dropdown.addOption(value, label);
+                }
+                dropdown.setValue(this.project);
+                dropdown.onChange(value => {
+                    this.project = value;
+                });
+            });
+
+        new Setting(contentEl)
             .setName('Columns (optional)')
             .setDesc('Comma-separated tags, left to right. Leave blank for the default `#ToDo`/`#InProgress`/`#Done`, which also keeps this board in sync with task-front-end and task_viewer.py - a custom set only applies here.')
             .addText(text => text
@@ -57,7 +73,7 @@ export class CreateBoardModal extends Modal {
                 .setCta()
                 .onClick(() => {
                     this.close();
-                    void this.onSubmit(this.boardName, this.filterTags, this.columnTags);
+                    void this.onSubmit(this.boardName, this.filterTags, this.columnTags, this.project);
                 }));
     }
 

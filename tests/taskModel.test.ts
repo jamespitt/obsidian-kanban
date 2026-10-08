@@ -14,6 +14,14 @@ import {
     noteTitleFromTask,
     addNoteLinkToContent,
     extractWikilink,
+    replaceWikilink,
+    setProjectLinkInContent,
+    taskProject,
+    matchesProjectFilter,
+    isProjectNote,
+    boardProjectOptions,
+    parseBoardProject,
+    BOARD_NO_PROJECT,
     setDueDateInContent,
     setFieldInContent,
     foldSubtasks,
@@ -60,6 +68,10 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
         throw new Error(`FAIL: ${label}\n  expected: ${e}\n  actual:   ${a}`);
     }
     console.debug(`ok - ${label}`);
+}
+
+function assert(condition: boolean, label: string) {
+    assertEqual(condition, true, label);
 }
 
 function run() {
@@ -443,6 +455,75 @@ function run() {
         'extracts the wikilink target from a title');
     assertEqual(extractWikilink('Buy milk #groceries'), null, 'null when there is no wikilink');
     assertEqual(extractWikilink('Two links [[First]] [[Second]]'), 'First', 'takes the first wikilink when there are several');
+
+    // --- project links and the project filter ---
+
+    assertEqual(replaceWikilink('Book flights   [[Old Trip]]', 'New Trip'), 'Book flights   [[New Trip]]',
+        'replaceWikilink swaps the existing link in place');
+    assertEqual(replaceWikilink('Book flights   [[Old Trip]] soon', null), 'Book flights soon',
+        'replaceWikilink removes the link and its leading space');
+    assertEqual(replaceWikilink('Book flights', 'New Trip'), 'Book flights   [[New Trip]]',
+        'replaceWikilink appends a link when there is none');
+    assertEqual(replaceWikilink('Book flights', null), 'Book flights',
+        'replaceWikilink leaves a title with no link alone when removing');
+
+    const projLines = '# Notes\n- [ ] Book flights   [[Old Trip]] #ToDo [due::2026-09-01] [id::7k3m9x2qhd] [updated::2026-01-01T00:00:00Z]\n- [ ] Plain task #ToDo\n';
+    const swapped = setProjectLinkInContent(projLines, 2, 'New Trip');
+    assert(swapped.includes('- [ ] Book flights   [[New Trip]] #ToDo [due::2026-09-01] [id::7k3m9x2qhd] [updated::'),
+        'setProjectLinkInContent swaps the project link and keeps the other fields in place');
+    assert(!swapped.includes('[[Old Trip]]'), 'setProjectLinkInContent drops the old project link');
+    assert(!/\[updated::2026-01-01T00:00:00Z\]/.test(swapped), 'setProjectLinkInContent re-stamps [updated::]');
+    assertEqual(setProjectLinkInContent(projLines, 2, null).split('\n')[1]!.replace(/ \[updated::[^\]]*\]$/, ''),
+        '- [ ] Book flights #ToDo [due::2026-09-01] [id::7k3m9x2qhd]',
+        'setProjectLinkInContent with null removes the project link');
+    assertEqual(setProjectLinkInContent(projLines, 3, 'Trip').split('\n')[2]!.replace(/ \[updated::[^\]]*\]$/, ''),
+        '- [ ] Plain task   [[Trip]] #ToDo',
+        'setProjectLinkInContent inserts a link before the tags when a task has none');
+    assertEqual(setProjectLinkInContent(projLines, 3, null), projLines,
+        'setProjectLinkInContent with null on an unlinked task changes nothing');
+    assertEqual(setProjectLinkInContent(projLines, 1, 'Trip'), projLines,
+        'setProjectLinkInContent is a no-op on a non-task line');
+    assertEqual(setProjectLinkInContent(projLines, 99, 'Trip'), projLines,
+        'setProjectLinkInContent is a no-op for an out-of-range line');
+
+    const projects = ['Center Parcs Trip', 'Home Fixes'];
+    assertEqual(taskProject({ title: 'Book   [[center parcs trip]]' }, projects), 'Center Parcs Trip',
+        'taskProject matches the project name case-insensitively');
+    assertEqual(taskProject({ title: 'Read   [[Some Article]]' }, projects), null,
+        'taskProject is null for a link to a note that is not a project');
+    assertEqual(taskProject({ title: 'No link here' }, projects), null,
+        'taskProject is null when the task has no link');
+
+    const linkedTask = { title: 'Book   [[Home Fixes]]' } as Parameters<typeof matchesProjectFilter>[0];
+    const bareTask = { title: 'Buy milk' } as Parameters<typeof matchesProjectFilter>[0];
+    assert(matchesProjectFilter(linkedTask, '', projects), 'a blank project filter matches every task');
+    assert(matchesProjectFilter(linkedTask, 'Home Fixes', projects), 'a project filter matches its own tasks');
+    assert(!matchesProjectFilter(linkedTask, 'Center Parcs Trip', projects), 'a project filter hides other projects');
+    assert(!matchesProjectFilter(linkedTask, BOARD_NO_PROJECT, projects), 'the no-project filter hides linked tasks');
+    assert(matchesProjectFilter(bareTask, BOARD_NO_PROJECT, projects), 'the no-project filter shows unlinked tasks');
+    assert(matchesProjectFilter({ title: 'Read   [[Some Article]]' } as Parameters<typeof matchesProjectFilter>[0], BOARD_NO_PROJECT, projects),
+        'the no-project filter shows tasks linked only to a non-project note');
+
+    assert(isProjectNote({ tags: 'Project' }), 'a note tagged Project (string) is a project');
+    assert(isProjectNote({ tags: ['#project', 'Work'] }), 'a note tagged Project (list, #, any case) is a project');
+    assert(!isProjectNote({ tags: 'Projects-archive' }), 'a similar but different tag is not a project');
+    assert(!isProjectNote({ tags: 'Work' }) && !isProjectNote(undefined), 'a note without the tag is not a project');
+
+    assertEqual(boardProjectOptions(['A', 'B'], '').map((o) => o.value), ['', BOARD_NO_PROJECT, 'A', 'B'],
+        'project dropdown offers all, none, then each project');
+    assertEqual(boardProjectOptions(['A'], 'Gone').map((o) => o.value), ['', BOARD_NO_PROJECT, 'A', 'Gone'],
+        'project dropdown keeps a saved project that no longer exists');
+
+    assertEqual(parseBoardProject(serializeBoardConfig([], [], 'Home Fixes')), 'Home Fixes',
+        'serializeBoardConfig round-trips the project through parseBoardProject');
+    assertEqual(parseBoardProject(serializeBoardConfig([], [], BOARD_NO_PROJECT)), BOARD_NO_PROJECT,
+        'the no-project choice round-trips');
+    assertEqual(parseBoardProject(serializeBoardConfig(['urgent'], [])), '',
+        'a board with no project serializes with no project line');
+    assertEqual(serializeBoardConfig(['urgent'], []).includes('\nproject:'), false,
+        'a board with no project keeps the same file layout as before');
+    assertEqual(parseBoardFilter(serializeBoardConfig(['urgent'], [], 'Home Fixes')), ['urgent'],
+        'the project line does not disturb the filter line');
 
     console.debug('\nAll taskModel checks passed.');
 }

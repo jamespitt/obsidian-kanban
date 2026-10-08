@@ -3,6 +3,7 @@ import { KanbanView, KANBAN_VIEW_TYPE } from './view';
 import { DEFAULT_SETTINGS, KanbanSettings, KanbanSettingTab } from './settings';
 import { CreateBoardModal } from './CreateBoardModal';
 import { serializeBoardConfig } from './taskModel';
+import { listProjectNames } from './projects';
 
 export default class KanbanPlugin extends Plugin {
     settings: KanbanSettings;
@@ -43,7 +44,7 @@ export default class KanbanPlugin extends Plugin {
     createNewBoard() {
         const { vault, workspace } = this.app;
 
-        new CreateBoardModal(this.app, async (boardName: string, filterTagsRaw: string, columnTagsRaw: string) => {
+        new CreateBoardModal(this.app, listProjectNames(this.app), async (boardName: string, filterTagsRaw: string, columnTagsRaw: string, project: string) => {
             if (!boardName.trim()) boardName = 'Untitled board';
             const toTags = (raw: string) => raw.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
             const filterTags = toTags(filterTagsRaw);
@@ -56,7 +57,7 @@ export default class KanbanPlugin extends Plugin {
                 counter++;
             }
 
-            const file = await vault.create(fileName, serializeBoardConfig(filterTags, columnTags));
+            const file = await vault.create(fileName, serializeBoardConfig(filterTags, columnTags, project));
             const leaf = workspace.getLeaf(true);
             await leaf.openFile(file);
         }).open();

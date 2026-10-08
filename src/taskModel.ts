@@ -326,17 +326,46 @@ export function parseBoardColumns(content: string): string[] {
     return columns.length > 0 ? columns : [...KANBAN_STATUSES];
 }
 
-/** Inverse of parseBoardFilter/parseBoardColumns - the content written back to a board file. */
-export function serializeBoardConfig(filterTags: string[], columns: string[]): string {
+/**
+ * The project filter value meaning "tasks with no project". A board with no
+ * `project:` line (or a blank one) shows tasks of every project.
+ */
+export const BOARD_NO_PROJECT = '(none)';
+
+const PROJECT_LINE_RE = /^\s*project\s*:\s*(.*)$/i;
+
+/**
+ * Parses a board's project filter from its "project: Name" line: a single
+ * value (project names aren't comma lists). '' when there is no such line -
+ * the board shows every project. BOARD_NO_PROJECT is the "no project" choice.
+ */
+export function parseBoardProject(content: string): string {
+    for (const line of content.split('\n')) {
+        const m = PROJECT_LINE_RE.exec(line);
+        if (m) return (m[1] ?? '').trim();
+    }
+    return '';
+}
+
+/**
+ * Inverse of parseBoardFilter/parseBoardColumns/parseBoardProject - the
+ * content written back to a board file. The project line is only written
+ * when one is set, so boards without a project filter keep their old content.
+ */
+export function serializeBoardConfig(filterTags: string[], columns: string[], project = ''): string {
     const usingDefaultColumns = columns.length === 0;
     const filterDesc = filterTags.length > 0
         ? `tasks tagged ${filterTags.map((t) => `#${t}`).join(', ')}`
         : 'every task in scope';
+    const projectDesc = project
+        ? `, ${project === BOARD_NO_PROJECT ? 'with no project' : `linked to project ${project}`}`
+        : '';
     const columnsDesc = usingDefaultColumns
         ? `the default columns (${KANBAN_STATUSES.map((c) => `#${c}`).join(' / ')})`
         : `columns ${columns.map((c) => `#${c}`).join(' / ')}`;
-    const desc = `Showing ${filterDesc}, with ${columnsDesc}.`;
-    return `%% Kanban board - ${desc} Edit the lines below (comma-separated tags; blank filter = show everything, blank columns = default To Do/In Progress/Done) and re-open the board to apply changes. %%\nfilter: ${filterTags.join(', ')}\ncolumns: ${columns.join(', ')}\n`;
+    const desc = `Showing ${filterDesc}${projectDesc}, with ${columnsDesc}.`;
+    const projectLine = project ? `project: ${project}\n` : '';
+    return `%% Kanban board - ${desc} Edit the lines below (comma-separated tags; blank filter = show everything, blank columns = default To Do/In Progress/Done) and re-open the board to apply changes. A project line limits the board to one project's tasks; blank or missing = every project. %%\nfilter: ${filterTags.join(', ')}\ncolumns: ${columns.join(', ')}\n${projectLine}`;
 }
 
 /**
@@ -457,6 +486,93 @@ export function addNoteLinkToContent(content: string, lineNum: number, noteTitle
         : `${titlePart}   [[${noteTitle}]]`;
     lines[idx] = `${indent ?? ''}- [${statusChar}] ${touchUpdated(newRaw)}`;
     return lines.join('\n');
+}
+
+const WIKILINK_RE = /\[\[[^\]]+\]\]/;
+const FIRST_WIKILINK_RE = /\s*\[\[[^\]]+\]\]/;
+
+/**
+ * Replaces a title's first `[[…]]` link with `[[note]]`, or removes it when
+ * `note` is null. With no link yet, `[[note]]` is appended (after three
+ * spaces, the vault's convention). Same as task-front-end's withWikilink.
+ */
+export function replaceWikilink(title: string, note: string | null): string {
+    if (!WIKILINK_RE.test(title)) return note ? `${title.trimEnd()}   [[${note}]]` : title;
+    if (note) return title.replace(WIKILINK_RE, `[[${note}]]`);
+    return title.replace(FIRST_WIKILINK_RE, '').trimEnd();
+}
+
+/**
+ * Sets a task line's project link to `[[project]]`, or removes it when
+ * `project` is null. A task has one project: the first `[[…]]` on the line
+ * is the one swapped. Stamps `[updated::]` like every other line edit. A
+ * task with no link yet gets one inserted as addNoteLinkToContent does.
+ */
+export function setProjectLinkInContent(content: string, lineNum: number, project: string | null): string {
+    const lines = content.split('\n');
+    const idx = lineNum - 1;
+    if (idx < 0 || idx >= lines.length) return content;
+
+    const line = lines[idx];
+    if (line === undefined) return content;
+    const m = TASK_LINE_RE.exec(line);
+    if (!m) return content;
+
+    const [, indent, statusChar, rawBody] = m;
+    const raw = rawBody ?? '';
+    if (!WIKILINK_RE.test(raw)) {
+        return project ? addNoteLinkToContent(content, lineNum, project) : content;
+    }
+    lines[idx] = `${indent ?? ''}- [${statusChar}] ${touchUpdated(replaceWikilink(raw, project))}`;
+    return lines.join('\n');
+}
+
+/**
+ * The project a task is linked to: its first `[[…]]` link, if that names one
+ * of `projectNames` (case-insensitively, as Obsidian resolves links). A link
+ * to some other note is not a project, so this is null for it.
+ */
+export function taskProject(task: Pick<Task, 'title'>, projectNames: readonly string[]): string | null {
+    const link = extractWikilink(task.title);
+    if (!link) return null;
+    const lower = link.toLowerCase();
+    return projectNames.find((p) => p.toLowerCase() === lower) ?? null;
+}
+
+/**
+ * The choices for a board's project dropdown: all projects, no project, then
+ * each project. A board filtered to a project that no longer exists keeps
+ * that choice, so saving the modal doesn't silently clear the filter.
+ */
+export function boardProjectOptions(projects: readonly string[], current: string): { value: string; label: string }[] {
+    const names = [...projects];
+    if (current && current !== BOARD_NO_PROJECT && !names.includes(current)) names.push(current);
+    return [
+        { value: '', label: 'All projects' },
+        { value: BOARD_NO_PROJECT, label: 'No project' },
+        ...names.map((name) => ({ value: name, label: name })),
+    ];
+}
+
+/**
+ * Whether a note is a project: its frontmatter tags include `Project` (a
+ * string or a list, `#` optional), the same definition notesmd-cli uses.
+ */
+export function isProjectNote(frontmatter: Record<string, unknown> | undefined): boolean {
+    const tags = frontmatter?.tags;
+    const list: unknown[] = Array.isArray(tags) ? tags : typeof tags === 'string' ? tags.split(/[\s,]+/) : [];
+    return list.some((t) => typeof t === 'string' && t.replace(/^#/, '').toLowerCase() === 'project');
+}
+
+/**
+ * Whether a task passes a board's project filter. A blank filter matches
+ * everything; BOARD_NO_PROJECT matches tasks with no project; anything else is
+ * a project name the task must be linked to.
+ */
+export function matchesProjectFilter(task: Task, filter: string, projectNames: readonly string[]): boolean {
+    if (!filter) return true;
+    const project = taskProject(task, projectNames);
+    return filter === BOARD_NO_PROJECT ? project === null : project === filter;
 }
 
 /** The fields a card lets you edit in place (each is a `[key::value]` on the task line). */

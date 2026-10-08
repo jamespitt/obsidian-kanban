@@ -18,6 +18,11 @@ import {
     noteTitleFromTask,
     addNoteLinkToContent,
     extractWikilink,
+    parseBoardProject,
+    BOARD_NO_PROJECT,
+    matchesProjectFilter,
+    replaceWikilink,
+    setProjectLinkInContent,
     setDueDateInContent,
     setFieldInContent,
     addSubtaskInContent,
@@ -34,6 +39,8 @@ import { AddTaskModal, AddTaskTarget } from './AddTaskModal';
 import { AddSubtaskModal } from './AddSubtaskModal';
 import { FieldEditModal } from './FieldEditModal';
 import { ParentPickerModal } from './ParentPickerModal';
+import { ProjectPickerModal } from './ProjectPickerModal';
+import { listProjectNames } from './projects';
 import { ApiConfig, addSubtask, addTask, apiTaskToTask, fetchAllTasks, fetchKanbanTasks, fetchLists, fetchNote, renameTask, setDueDate, setKanbanStatus, setParent, setTaskField } from './apiClient';
 import { obsidianRequest } from './obsidianRequest';
 import { RemoteNoteModal } from './RemoteNoteModal';
@@ -60,6 +67,10 @@ export class KanbanView extends TextFileView {
     private tasks: Task[] = [];
     private filterTags: string[] = [];
     private columns: string[] = [...KANBAN_STATUSES];
+    // '' = every project, BOARD_NO_PROJECT = tasks with none, else a project name.
+    private projectFilter = '';
+    // The vault's projects (notes tagged Project), refreshed with the tasks.
+    private projectNames: string[] = [];
     private draggedTask: Task | null = null;
     private scannedFiles: TFile[] = [];
     private scheduleRefresh: Debouncer<[], void>;
@@ -96,12 +107,13 @@ export class KanbanView extends TextFileView {
 
     getViewData(): string {
         const usingDefaultColumns = sameColumns(this.columns, KANBAN_STATUSES);
-        return serializeBoardConfig(this.filterTags, usingDefaultColumns ? [] : this.columns);
+        return serializeBoardConfig(this.filterTags, usingDefaultColumns ? [] : this.columns, this.projectFilter);
     }
 
     setViewData(data: string, _clear: boolean): void {
         this.filterTags = parseBoardFilter(data);
         this.columns = parseBoardColumns(data);
+        this.projectFilter = parseBoardProject(data);
         void this.refreshTasks();
     }
 
@@ -109,6 +121,7 @@ export class KanbanView extends TextFileView {
         this.tasks = [];
         this.filterTags = [];
         this.columns = [...KANBAN_STATUSES];
+        this.projectFilter = '';
     }
 
     async onOpen(): Promise<void> {
@@ -146,6 +159,7 @@ export class KanbanView extends TextFileView {
     }
 
     private async refreshTasks(): Promise<void> {
+        this.projectNames = listProjectNames(this.app);
         this.tasks = await this.scanTasks();
         this.render();
     }
@@ -209,10 +223,13 @@ export class KanbanView extends TextFileView {
             this.app,
             this.filterTags.join(', '),
             usingDefaultColumns ? '' : this.columns.join(', '),
-            (filterInput, columnsInput) => {
+            this.projectNames,
+            this.projectFilter,
+            (filterInput, columnsInput, project) => {
                 this.filterTags = filterInput.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
                 const customColumns = columnsInput.split(',').map((t) => t.trim().replace(/^#/, '')).filter((t) => t.length > 0);
                 this.columns = customColumns.length > 0 ? customColumns : [...KANBAN_STATUSES];
+                this.projectFilter = project;
                 this.requestSave();
                 this.render();
             }
@@ -224,7 +241,9 @@ export class KanbanView extends TextFileView {
         container.empty();
         container.addClass('kanban-board-container');
 
-        const board = foldSubtasks(this.tasks, this.columns).filter((t) => matchesFilter(t, this.filterTags));
+        const board = foldSubtasks(this.tasks, this.columns)
+            .filter((t) => matchesFilter(t, this.filterTags))
+            .filter((t) => matchesProjectFilter(t, this.projectFilter, this.projectNames));
         const columns: Record<string, Task[]> = {};
         for (const c of this.columns) columns[c] = [];
         for (const task of board) {
@@ -232,9 +251,12 @@ export class KanbanView extends TextFileView {
             if (status) columns[status]?.push(task);
         }
 
-        if (this.filterTags.length > 0) {
+        if (this.filterTags.length > 0 || this.projectFilter) {
             const filterEl = container.createDiv({ cls: 'kanban-board-filter' });
-            filterEl.setText(`Filtered to: ${this.filterTags.map((t) => `#${t}`).join(', ')}`);
+            const parts: string[] = [];
+            if (this.filterTags.length > 0) parts.push(this.filterTags.map((t) => `#${t}`).join(', '));
+            if (this.projectFilter) parts.push(this.projectFilter === BOARD_NO_PROJECT ? 'no project' : `project ${this.projectFilter}`);
+            filterEl.setText(`Filtered to: ${parts.join(' · ')}`);
         }
 
         const boardEl = container.createDiv({ cls: 'kanban-columns' });
@@ -362,6 +384,11 @@ export class KanbanView extends TextFileView {
                         .onClick(() => { this.editTaskField(task, field); });
                 });
             }
+            menu.addItem((item) => {
+                item.setTitle('Link to project...')
+                    .setIcon('folder')
+                    .onClick(() => { this.openProjectPicker(task); });
+            });
             menu.addItem((item) => {
                 item.setTitle('Make subtask of...')
                     .setIcon('corner-down-right')
@@ -616,6 +643,43 @@ export class KanbanView extends TextFileView {
     }
 
     /** Lets you pick which task `task` should become a subtask of. */
+    /** Picks the task's project from the vault's projects; "No project" removes the link. */
+    private openProjectPicker(task: Task): void {
+        new ProjectPickerModal(this.app, this.projectNames, (project) => {
+            void this.setTaskProject(task, project);
+        }).open();
+    }
+
+    /**
+     * Swaps the task's project link for `project` (null removes it). Local
+     * when the task's file is on this device, otherwise through the server -
+     * the same split createNoteFromCard makes.
+     */
+    private async setTaskProject(task: Task, project: string | null): Promise<void> {
+        const sourceFile = this.app.vault.getAbstractFileByPath(task.filePath);
+        if (sourceFile instanceof TFile) {
+            try {
+                await this.app.vault.process(sourceFile, (content) =>
+                    setProjectLinkInContent(content, task.lineNum, project));
+            } catch (e) {
+                new Notice(`Failed to link project: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        } else if (this.apiMode()) {
+            const newTitle = replaceWikilink(task.title, project);
+            if (newTitle === task.title) return;
+            try {
+                await renameTask(obsidianRequest, this.apiConfig(), task.filePath, task.lineNum, newTitle);
+            } catch (e) {
+                new Notice(`Failed to link project on the server: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        } else {
+            new Notice(`${task.filePath} isn't on this device yet - the task wasn't linked.`);
+            return;
+        }
+
+        await this.refreshTasks();
+    }
+
     private async openParentPicker(task: Task): Promise<void> {
         let all: Task[];
         if (this.apiMode()) {
